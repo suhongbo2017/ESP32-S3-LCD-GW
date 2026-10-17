@@ -35,7 +35,11 @@ static bool load_str(nvs_handle_t h, const char *key, char *dst, size_t dst_sz)
     size_t len = dst_sz;
     esp_err_t err = nvs_get_str(h, key, dst, &len);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "NVS 覆盖 %s = \"%s\"", key, dst);
+        if (strcmp(key, "wifi_pass") == 0) {
+            ESP_LOGI(TAG, "NVS 覆盖 wifi_pass（%s）", dst[0] != '\0' ? "已设置" : "未设置");
+        } else {
+            ESP_LOGI(TAG, "NVS 覆盖 %s = \"%s\"", key, dst);
+        }
         return true;
     }
     return false;
@@ -116,7 +120,11 @@ esp_err_t app_cfg_set(const char *key, const char *val)
         s_from_nvs = true;
     }
     nvs_close(h);
-    ESP_LOGI(TAG, "已保存 %s = \"%s\"（%s）", key, val, esp_err_to_name(err));
+    if (strcmp(key, "wifi_pass") == 0) {
+        ESP_LOGI(TAG, "已保存 wifi_pass（%s，%s）", dst[0] != '\0' ? "已设置" : "未设置", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "已保存 %s = \"%s\"（%s）", key, val, esp_err_to_name(err));
+    }
     return err;
 }
 
