@@ -2,7 +2,8 @@
 # web_console：本地 Web 控制台（esp_http_server + mDNS）
 #  - GET  /                    状态页（内嵌 HTML）
 #  - GET  /api/status          状态 JSON（上行/IP/温湿度/运行时长/MQTT/TF）
-#  - GET  /api/devices         命名设备列表与状态
+#  - GET  /api/gpio            已定义设备 / 可定义引脚 / 板载占用引脚
+#  - POST /api/gpio/define     定义命名输出（JSON）
 #  - POST /api/device?id=&value=0|1   设置命名设备开关
 #  - GET  /api/logs            列出 TF 日志文件
 #  - GET  /api/logs/<file>     下载 TF 日志

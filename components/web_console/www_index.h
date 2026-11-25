@@ -1,4 +1,4 @@
-/* 自动生成/维护：Web 控制台首页（纯内嵌，无外部依赖，简洁监控仪表盘） */
+/* 自动生成/维护：Web 控制台首页（纯内嵌，无外部依赖；信息 / 设置 / GPIO 定义三页） */
 #pragma once
 
 static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
@@ -34,16 +34,24 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
   .top .grow{flex:1;min-width:8px}
   .clock{font-variant-numeric:tabular-nums;font-size:15px;color:var(--teal);white-space:nowrap}
   .cursor{display:inline-block;width:7px;height:7px;background:var(--ok);margin-left:4px;vertical-align:1px}
+
+  /* 页面导航 */
+  .tabs{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}
+  .tab{font:inherit;font-size:14px;background:var(--panel);border:1px solid var(--line);border-radius:3px;
+    padding:8px 18px;color:var(--mut);cursor:pointer}
+  .tab:hover{background:var(--deep);color:var(--fg)}
+  .tab.active{background:var(--teal);border-color:var(--teal);color:#fff}
+  .page{display:none;grid-column:1/-1;grid-template-columns:repeat(12,minmax(0,1fr));gap:var(--gap)}
+  .page.active{display:grid}
+
   .card{grid-column:span 6;min-width:0;overflow:hidden}
-  .card:nth-of-type(1),.card:nth-of-type(2),.card:nth-of-type(5){grid-column:1/-1}
-  .card h2{font-size:15px;font-weight:650;color:var(--fg);background:var(--deep);border-bottom:1px solid var(--line);padding:10px 14px;display:flex;gap:9px;align-items:center;min-width:0}
-  .card h2::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--teal);flex:0 0 auto}
-  .card:nth-of-type(2) h2::before{background:var(--sky)}
-  .card:nth-of-type(3) h2::before{background:var(--amber)}
-  .card:nth-of-type(4) h2::before{background:var(--blue)}
-  .card:nth-of-type(5) h2::before{background:var(--violet)}
-  .card:nth-of-type(6) h2::before{background:var(--coral)}
+  .card.full{grid-column:1/-1}
+  .card h2{font-size:15px;font-weight:650;color:var(--fg);background:var(--deep);border-bottom:1px solid var(--line);
+    padding:10px 14px;display:flex;gap:9px;align-items:center;min-width:0}
+  .card h2::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--card-accent,var(--teal));flex:0 0 auto}
   .card h2 .msg{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .c-teal{--card-accent:var(--teal)}.c-blue{--card-accent:var(--blue)}.c-amber{--card-accent:var(--amber)}
+  .c-sky{--card-accent:var(--sky)}.c-violet{--card-accent:var(--violet)}.c-coral{--card-accent:var(--coral)}
   .card .bd{padding:clamp(11px,1.4vw,16px);min-width:0}
   .msg{font-size:clamp(12px,1.1vw,14px);color:var(--mut);min-height:16px;font-weight:normal;letter-spacing:0;overflow-wrap:anywhere}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:10px;padding:12px}
@@ -79,6 +87,18 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
   tr:nth-child(even) td{background:var(--deep)}a{color:var(--teal)}
   code{background:var(--deep);border:1px solid var(--line);border-radius:2px;padding:2px 5px;font-size:12px;overflow-wrap:anywhere}
   .wrap > .sub{grid-column:1/-1;margin-top:0}
+
+  /* 已定义 / 不可定义 IO */
+  .devlist{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:10px}
+  .devcard{background:var(--deep);border:1px solid var(--line);border-left:3px solid var(--teal);border-radius:3px;padding:12px 14px;min-width:0}
+  .devcard .n{font-size:15px;font-weight:650;overflow-wrap:anywhere}
+  .devcard .p{font-size:12px;color:var(--mut);margin-top:2px}
+  .devcard .d{font-size:13px;margin-top:6px;min-height:18px;overflow-wrap:anywhere}
+  .devcard .st{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+  .reslist{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:8px}
+  .rescard{background:var(--deep);border:1px solid var(--line);border-radius:3px;padding:8px 10px;font-size:12px;color:var(--mut);overflow-wrap:anywhere}
+  .rescard b{display:block;color:var(--fg);font-size:13px;margin-bottom:2px}
+
   @media (max-width:700px){
     .card{grid-column:1/-1}.top{align-items:flex-start;flex-wrap:wrap}.top .grow{display:none}
     .clock{margin-left:auto}.row > .sub[style*="width:112px"]{flex-basis:100%;width:100%!important}
@@ -87,6 +107,7 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
     body{padding:8px}.top{padding:11px;gap:9px}.top h1{font-size:18px}.clock{font-size:13px}
     .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:9px}.kv{padding:10px}
     .kv .v{font-size:clamp(18px,6vw,24px)}.card .bd{padding:10px}
+    .tab{padding:7px 12px}
   }
   .grid > .kv:only-child{grid-column:1/-1}
   @media (max-width:340px){.grid{grid-template-columns:1fr}}
@@ -106,74 +127,107 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
     </select></label>
   </header>
 
-  <section class="card pane">
-    <h2>运行状态 <span class="msg" id="ts2"></span></h2>
-    <div class="grid" id="status"><div class="kv"><div class="k">LOADING…</div><div class="v">—</div></div></div>
-  </section>
+  <nav class="tabs">
+    <button class="tab active" data-page="info" onclick="showPage('info')">信息</button>
+    <button class="tab" data-page="config" onclick="showPage('config')">设置与升级</button>
+    <button class="tab" data-page="gpio" onclick="showPage('gpio')">GPIO 定义</button>
+  </nav>
 
-  <section class="card pane">
-    <h2>设备开关 <span class="msg" id="gmsg"></span></h2>
-    <div class="bd">
-      <div class="row" id="devs"><button disabled>加载中…</button></div>
-      <div class="msg">按钮来自固件设备表；Home Assistant 中的同名 switch 会同步控制同一路输出</div>
-    </div>
-  </section>
+  <main class="page active" id="page-info">
+    <section class="card pane full c-teal">
+      <h2>运行状态 <span class="msg" id="ts2"></span></h2>
+      <div class="grid" id="status"><div class="kv"><div class="k">LOADING…</div><div class="v">—</div></div></div>
+    </section>
 
-  <section class="card pane">
-    <h2>TF 卡日志</h2>
-    <div class="bd">
-      <table id="logs"><tbody><tr><td>加载中…</td></tr></tbody></table>
-    </div>
-  </section>
-
-  <section class="card pane">
-    <h2>温湿度曲线 <span class="msg" id="hmsg"></span></h2>
-    <div class="bd">
-      <div class="row">
-        <button onclick="drawChart()">刷新曲线</button>
-        <span class="msg">已采样 <span id="hcnt">0</span> 条（约 15s/条，最多 240 条 ≈ 1 小时）</span>
+    <section class="card pane full c-amber">
+      <h2>温湿度曲线 <span class="msg" id="hmsg"></span></h2>
+      <div class="bd">
+        <div class="row">
+          <button onclick="drawChart()">刷新曲线</button>
+          <span class="msg">已采样 <span id="hcnt">0</span> 条（约 15s/条，最多 240 条 ≈ 1 小时）</span>
+        </div>
+        <div class="chartbox" id="chart"><div class="msg">加载中…</div></div>
       </div>
-      <div class="chartbox" id="chart"><div class="msg">加载中…</div></div>
-    </div>
-  </section>
+    </section>
+  </main>
 
-  <section class="card pane">
-    <h2>参数配置 <span class="msg" id="cmsg"></span></h2>
-    <div class="bd">
-      <div class="row"><span class="sub" style="width:112px">WiFi SSID</span><input id="c_ssid" style="flex:1"></div>
-      <div class="row"><span class="sub" style="width:112px">WiFi 密码</span><input id="c_pass" type="password" placeholder="(不改请留空)" style="flex:1"></div>
-      <div class="row"><span class="sub" style="width:112px">MQTT 主机</span><input id="c_host" style="flex:1"></div>
-      <div class="row"><span class="sub" style="width:112px">MQTT 端口</span><input id="c_port" style="width:90px"></div>
-      <div class="row"><span class="sub" style="width:112px">通知主题</span><input id="c_tn" style="flex:1"></div>
-      <div class="row"><span class="sub" style="width:112px">传感器主题</span><input id="c_ts" style="flex:1"></div>
-      <div class="row">
-        <button class="pri" onclick="cfgSave()">保存配置</button>
-        <button onclick="saveAndReboot()">保存并重启</button>
-        <button class="sec" onclick="cfgReset()">恢复默认</button>
-        <button class="sec" onclick="reboot(false)">仅重启</button>
+  <main class="page" id="page-config">
+    <section class="card pane full c-blue">
+      <h2>参数配置 <span class="msg" id="cmsg"></span></h2>
+      <div class="bd">
+        <div class="row"><span class="sub" style="width:112px">WiFi SSID</span><input id="c_ssid" style="flex:1"></div>
+        <div class="row"><span class="sub" style="width:112px">WiFi 密码</span><input id="c_pass" type="password" placeholder="(不改请留空)" style="flex:1"></div>
+        <div class="row"><span class="sub" style="width:112px">MQTT 主机</span><input id="c_host" style="flex:1"></div>
+        <div class="row"><span class="sub" style="width:112px">MQTT 端口</span><input id="c_port" style="width:90px"></div>
+        <div class="row"><span class="sub" style="width:112px">通知主题</span><input id="c_tn" style="flex:1"></div>
+        <div class="row"><span class="sub" style="width:112px">传感器主题</span><input id="c_ts" style="flex:1"></div>
+        <div class="row">
+          <button class="pri" onclick="cfgSave()">保存配置</button>
+          <button onclick="saveAndReboot()">保存并重启</button>
+          <button class="sec" onclick="cfgReset()">恢复默认</button>
+          <button class="sec" onclick="reboot(false)">仅重启</button>
+        </div>
+        <div class="msg">保存写入 NVS，重启后生效</div>
       </div>
-      <div class="msg">保存写入 NVS，重启后生效</div>
-    </div>
-  </section>
+    </section>
 
-  <section class="card pane">
-    <h2>OTA 固件升级 <span class="msg" id="omsg"></span></h2>
-    <div class="bd">
-      <div class="row">
-        <input type="file" id="fw" accept=".bin" style="flex:1;padding:5px">
-        <button onclick="ota()">上传升级</button>
+    <section class="card pane full c-violet">
+      <h2>TF 卡日志</h2>
+      <div class="bd">
+        <table id="logs"><tbody><tr><td>加载中…</td></tr></tbody></table>
       </div>
-      <div class="msg">选 <code>build/esp32s3_gateway.bin</code>；升级成功后自动重启</div>
-    </div>
-  </section>
+    </section>
+
+    <section class="card pane full c-coral">
+      <h2>OTA 固件升级 <span class="msg" id="omsg"></span></h2>
+      <div class="bd">
+        <div class="row">
+          <input type="file" id="fw" accept=".bin" style="flex:1;padding:5px">
+          <button onclick="ota()">上传升级</button>
+        </div>
+        <div class="msg">选 <code>build/esp32s3_gateway.bin</code>；升级成功后自动重启</div>
+      </div>
+    </section>
+  </main>
+
+  <main class="page" id="page-gpio">
+    <section class="card pane full c-teal">
+      <h2>定义新 IO <span class="msg" id="dmsg"></span></h2>
+      <div class="bd">
+        <div class="row"><span class="sub" style="width:112px">设备名</span><input id="d_name" maxlength="12" placeholder="例如：箱内灯" style="flex:1"></div>
+        <div class="row"><span class="sub" style="width:112px">说明</span><input id="d_desc" maxlength="30" placeholder="例如：继电器 IN，低电平关" style="flex:1"></div>
+        <div class="row">
+          <span class="sub" style="width:112px">引脚</span>
+          <select id="d_pin"><option value="">加载中…</option></select>
+          <button class="pri" onclick="defineGpio()">定义</button>
+        </div>
+        <div class="msg">引脚定义后不可修改；已使用的引脚会从下拉列表移除</div>
+      </div>
+    </section>
+
+    <section class="card pane full c-sky">
+      <h2>已定义 IO <span class="msg" id="gmsg"></span></h2>
+      <div class="bd">
+        <div class="devlist" id="devs"><div class="msg">加载中…</div></div>
+      </div>
+    </section>
+
+    <section class="card pane full c-violet">
+      <h2>不可定义（板载占用）</h2>
+      <div class="bd">
+        <div class="reslist" id="reserved"><div class="msg">加载中…</div></div>
+      </div>
+    </section>
+  </main>
 
   <div class="sub" style="margin-top:6px">
-    只读接口：<code>/api/status</code> <code>/api/devices</code> <code>/api/logs</code> <code>/api/history</code> ｜ 控制接口：<code>POST /api/device</code>
+    接口：<code>/api/status</code> <code>/api/gpio</code> <code>/api/gpio/define</code> <code>/api/device</code> <code>/api/logs</code> <code>/api/history</code>
   </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path, options = {}){
   return fetch(path, options);
 }
@@ -187,6 +241,17 @@ function setTheme(name){
 }
 try{ setTheme(localStorage.getItem('gateway-theme') || 'teal'); }catch(e){ setTheme('teal'); }
 $('theme-selector').addEventListener('change', e => setTheme(e.target.value));
+
+/* ---- 页面切换 ---- */
+function showPage(name){
+  const pages = ['info','config','gpio'];
+  const p = pages.includes(name) ? name : 'info';
+  document.querySelectorAll('.page').forEach(el => el.classList.toggle('active', el.id === 'page-' + p));
+  document.querySelectorAll('.tab').forEach(el => el.classList.toggle('active', el.dataset.page === p));
+  try{ localStorage.setItem('gateway-page', p); }catch(e){}
+  if (p === 'info') drawChart();
+  if (p === 'gpio') loadGpio();
+}
 
 async function refresh(){
   try{
@@ -240,23 +305,72 @@ async function downloadLog(name){
   finally{ if (url) URL.revokeObjectURL(url); }
 }
 
-async function loadDevices(){
+/* ---- GPIO 定义 / 已定义设备 ---- */
+async function loadGpio(){
   try{
-    const j = await (await api('/api/devices')).json();
-    const list = (j.devices || []);
-    $('devs').innerHTML = list.length
-      ? list.map(d => `<button class="${d.on ? 'pri' : 'sec'}" onclick="deviceSet('${d.id}',${d.on ? 0 : 1})">${d.name}：${d.on ? '开' : '关'}</button>`).join('')
-      : '<span class="msg">（固件中未定义设备）</span>';
-  }catch(e){ $('devs').innerHTML = '<button disabled>加载失败</button>'; }
+    const j = await (await api('/api/gpio')).json();
+
+    const sel = $('d_pin');
+    const cur = sel.value;
+    const avail = j.available || [];
+    sel.innerHTML = avail.length
+      ? avail.map(p => `<option value="${p}">GPIO${p}</option>`).join('')
+      : '<option value="">无可用引脚</option>';
+    if (avail.map(String).includes(cur)) sel.value = cur;
+
+    const def = j.defined || [];
+    $('devs').innerHTML = def.length
+      ? def.map(d => `
+        <div class="devcard">
+          <div class="n">${esc(d.name)}</div>
+          <div class="p">GPIO${d.pin} · ${esc(d.id)}</div>
+          <div class="d">${d.desc ? esc(d.desc) : '（无说明）'}</div>
+          <div class="st">
+            <span class="msg">当前 <b class="${d.on ? 'ok' : 'bad'}">${d.on ? '开' : '关'}</b></span>
+            <button class="${d.on ? 'sec' : 'pri'}" onclick="deviceSet('${esc(d.id)}',${d.on ? 0 : 1})">${d.on ? '关闭' : '打开'}</button>
+          </div>
+        </div>`).join('')
+      : '<div class="msg">尚未定义任何 IO。选择引脚、填写设备名后点“定义”。</div>';
+
+    $('reserved').innerHTML = (j.reserved || [])
+      .map(r => `<div class="rescard"><b>GPIO${r.pin}</b>${esc(r.reason)}</div>`).join('');
+  }catch(e){
+    $('devs').innerHTML = '<div class="msg">加载失败: ' + esc(e) + '</div>';
+  }
 }
+
+async function defineGpio(){
+  const pin = Number($('d_pin').value);
+  const name = $('d_name').value.trim();
+  const desc = $('d_desc').value.trim();
+  if (!name){ $('dmsg').textContent = '请填写设备名'; return; }
+  if (!pin){ $('dmsg').textContent = '没有可用引脚'; return; }
+  $('dmsg').textContent = '定义中…';
+  try{
+    const r = await api('/api/gpio/define', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pin: pin, name: name, desc: desc})
+    });
+    const j = await r.json();
+    if (j.ok){
+      $('dmsg').textContent = '已定义 ' + j.name + '（GPIO' + j.pin + '）';
+      $('d_name').value = '';
+      $('d_desc').value = '';
+      loadGpio();
+    } else {
+      $('dmsg').textContent = '失败: ' + (j.message || j.error || ('HTTP ' + r.status));
+    }
+  }catch(e){ $('dmsg').textContent = '失败: ' + e; }
+}
+
 async function deviceSet(id, v){
   try{
     const j = await (await api('/api/device?id=' + encodeURIComponent(id) + '&value=' + v, {method:'POST'})).json();
-    $('gmsg').textContent = j.ok ? ((j.name || id) + (j.on ? ' 已开启' : ' 已关闭')) : ('失败: ' + (j.error || j.message || ''));
-    loadDevices();
+    $('gmsg').textContent = j.ok ? ((j.name || id) + (j.on ? ' 已打开' : ' 已关闭')) : ('失败: ' + (j.error || j.message || ''));
+    loadGpio();
   }catch(e){ $('gmsg').textContent = '失败: ' + e; }
 }
-
 
 /* ---- 温湿度曲线（纯 SVG 像素阶梯，无外部库） ---- */
 async function drawChart(){
@@ -281,7 +395,6 @@ async function drawChart(){
     const X  = i => Math.round(P + (W - 2*P) * i / (N - 1));
     const Yt = v => Math.round(P + (H - 2*P) * (1 - (v - t0) / (t1 - t0)));
     const Yh = v => Math.round(P + (H - 2*P) * (1 - (v - h0) / (h1 - h0)));
-    /* 阶梯（先横后竖）路径，像素感 */
     const path = (arr, Y) => 'M' + X(0) + ' ' + Y(arr[0]) +
       arr.slice(1).map((v, i) => 'H' + X(i+1) + ' V' + Y(v)).join(' ');
     const fmt = t => j.wall_clock ? new Date(t * 1000).toLocaleTimeString([], {hour12:false}) : ('+' + Math.round(t/60) + 'min');
@@ -363,10 +476,12 @@ async function ota(){
     $('omsg').textContent = j.ok ? '升级成功，设备重启中…' : ('失败: ' + (j.error || j.message));
   }catch(e){ $('omsg').textContent = '连接中断（设备可能已升级并重启）'; }
 }
-refresh(); loadLogs(); cfgLoad(); drawChart(); loadDevices();
+
+refresh(); loadLogs(); cfgLoad(); drawChart(); loadGpio();
+showPage(localStorage.getItem('gateway-page') || 'info');
 setInterval(refresh, 2000);
 setInterval(drawChart, 30000);
-setInterval(loadDevices, 5000);
+setInterval(() => { if ($('page-gpio').classList.contains('active')) loadGpio(); }, 10000);
 </script>
 </body>
 </html>)HTML";

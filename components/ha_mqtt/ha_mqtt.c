@@ -267,6 +267,28 @@ static void publish_discovery(void)
 }
 #endif /* CONFIG_HA_MQTT_DISCOVERY_ENABLE */
 
+/** 订阅单台设备的命令主题并发布当前状态（retain） */
+static void subscribe_device(const device_t *d)
+{
+    char topic[HA_DEV_TOPIC_MAX];
+    dev_topic(topic, sizeof(topic), d->id, "set");
+    esp_mqtt_client_subscribe_single(s_client, topic, 1);
+    ESP_LOGI(TAG, "已订阅：%s", topic);
+    publish_device_state(d->id, d->on);
+}
+
+/** 新定义设备：立即补发 Discovery + 订阅 + 状态（未连接时由重连流程统一处理） */
+static void on_device_defined(const device_t *d)
+{
+    if (d == NULL || d->kind != DEV_OUT || s_client == NULL || !s_connected) {
+        return;
+    }
+#if defined(CONFIG_HA_MQTT_DISCOVERY_ENABLE)
+    discovery_switch(d);
+#endif
+    subscribe_device(d);
+}
+
 /* ---------- esp-mqtt 事件回调（轻量：只解析 + 入队） ---------- */
 
 /** 解析 <prefix>/<id>/set 主题与 ON/OFF/1/0 载荷 */
@@ -328,14 +350,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         /* 命名设备：订阅命令主题并发布当前状态（retain） */
         for (int i = 0; i < device_count(); i++) {
             const device_t *d = device_at(i);
-            if (d == NULL || d->kind != DEV_OUT) {
-                continue;
+            if (d != NULL && d->kind == DEV_OUT) {
+                subscribe_device(d);
             }
-            char topic[HA_DEV_TOPIC_MAX];
-            dev_topic(topic, sizeof(topic), d->id, "set");
-            esp_mqtt_client_subscribe_single(s_client, topic, 1);
-            ESP_LOGI(TAG, "已订阅：%s", topic);
-            publish_device_state(d->id, d->on);
         }
         publish_state(1);   /* retain 上线状态，HA 重启后也能确认在线 */
         break;
@@ -518,6 +535,8 @@ esp_err_t ha_mqtt_init(void)
 
     /* 2.1) 设备状态变化 -> 立即发布 HA switch 状态（Web 触发的改动也走这里） */
     device_registry_set_change_listener(on_device_changed);
+    /* 2.2) 运行时新定义设备 -> 立即发布 Discovery / 订阅 / 状态 */
+    device_registry_set_define_listener(on_device_defined);
 
     /* 3) 心跳任务（周期发布 state） */
     xTaskCreate(heartbeat_task, "ha_hb", HA_HEARTBEAT_STACK, NULL,

@@ -5,5 +5,5 @@ idf_component_register(
     SRCS "app_main.c"
     INCLUDE_DIRS "."
     REQUIRES net_eth net_wifi net_manager market_data ui_dashboard ha_mqtt tf_storage web_console app_cfg sensor_history
-             device_registry devices nvs_flash esp_event log esp_netif esp_common freertos lwip
+             device_registry nvs_flash esp_event log esp_netif esp_common freertos lwip
 )

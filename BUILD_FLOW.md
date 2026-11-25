@@ -145,9 +145,12 @@ Web 服务不启用 Token 鉴权，页面和所有 `/api/*` 端点可直接访�
 
 ```bat
 curl --noproxy "*" -i "http://<网关IP>/api/status"
-curl --noproxy "*" -i "http://<网关IP>/api/devices"
+curl --noproxy "*" -i "http://<网关IP>/api/gpio"
 curl --noproxy "*" -i "http://<网关IP>/api/logs"
-curl --noproxy "*" -X POST "http://<网关IP>/api/device?id=light&value=1"
+curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
+  -d "{\"pin\":4,\"name\":\"箱内灯\",\"desc\":\"继电器 IN\"}" ^
+  "http://<网关IP>/api/gpio/define"
+curl --noproxy "*" -X POST "http://<网关IP>/api/device?id=gpio4&value=1"
 ```
 
 HTTP 为明文传输，且控制接口包含命名 GPIO 输出、配置、重启和 OTA；仅在可信、隔离的局域网使用，禁止暴露到公网或不受信任的网段。

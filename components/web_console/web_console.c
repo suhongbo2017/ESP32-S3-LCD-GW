@@ -5,7 +5,8 @@
  * 端点：
  *   GET  /                      状态页（内嵌 HTML）
  *   GET  /api/status            状态 JSON
- *   GET  /api/devices           命名设备列表与状态
+ *   GET  /api/gpio              已定义设备 / 可定义引脚 / 板载占用引脚
+ *   POST /api/gpio/define       定义命名输出（JSON: pin/name/desc）
  *   POST /api/device?id=&value=0|1 设置命名设备开关
  *   GET  /api/logs              列出 TF 日志
  *   GET  /api/logs/<file>       下载 TF 日志（防目录穿越）
@@ -132,12 +133,13 @@ static esp_err_t h_status(httpd_req_t *req)
     return send_json(req, o);
 }
 
-/** GET /api/devices —— 列出命名设备及当前状态 */
-static esp_err_t h_devices(httpd_req_t *req)
+/** GET /api/gpio —— 已定义设备 / 可定义引脚 / 板载占用引脚 */
+static esp_err_t h_gpio_info(httpd_req_t *req)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
-    cJSON *arr = cJSON_AddArrayToObject(o, "devices");
+
+    cJSON *def = cJSON_AddArrayToObject(o, "defined");
     for (int i = 0; i < device_count(); i++) {
         const device_t *d = device_at(i);
         if (d == NULL) {
@@ -148,9 +150,103 @@ static esp_err_t h_devices(httpd_req_t *req)
         cJSON *it = cJSON_CreateObject();
         cJSON_AddStringToObject(it, "id", d->id);
         cJSON_AddStringToObject(it, "name", d->name);
+        cJSON_AddStringToObject(it, "desc", d->desc);
         cJSON_AddNumberToObject(it, "pin", d->pin);
         cJSON_AddBoolToObject(it, "on", on);
-        cJSON_AddItemToArray(arr, it);
+        cJSON_AddItemToArray(def, it);
+    }
+
+    cJSON *avail = cJSON_AddArrayToObject(o, "available");
+    for (int pin = 0; pin <= 48; pin++) {
+        if (device_pin_allowed(pin) && device_find_pin(pin) == NULL) {
+            cJSON *n = cJSON_CreateNumber(pin);
+            if (n != NULL) {
+                cJSON_AddItemToArray(avail, n);
+            }
+        }
+    }
+
+    cJSON *res = cJSON_AddArrayToObject(o, "reserved");
+    for (int i = 0; i < device_reserved_count(); i++) {
+        const device_reserved_t *r = device_reserved_at(i);
+        if (r == NULL) {
+            continue;
+        }
+        cJSON *it = cJSON_CreateObject();
+        cJSON_AddNumberToObject(it, "pin", r->pin);
+        cJSON_AddStringToObject(it, "reason", r->reason);
+        cJSON_AddItemToArray(res, it);
+    }
+    return send_json(req, o);
+}
+
+/** POST /api/gpio/define —— 定义一个命名输出（JSON: {"pin","name","desc"}） */
+static esp_err_t h_gpio_define(httpd_req_t *req)
+{
+    char body[512];
+    int total = req->content_len;
+    if (total <= 0 || total >= (int)sizeof(body)) {
+        return send_err_json(req, "bad_body", "请求体为空或过大");
+    }
+    int got = 0;
+    while (got < total) {
+        int n = httpd_req_recv(req, body + got, total - got);
+        if (n <= 0) {
+            return send_err_json(req, "bad_body", "读取请求体失败");
+        }
+        got += n;
+    }
+    body[got] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL) {
+        return send_err_json(req, "bad_json", "JSON 解析失败");
+    }
+    cJSON *pin = cJSON_GetObjectItem(root, "pin");
+    cJSON *name = cJSON_GetObjectItem(root, "name");
+    cJSON *desc = cJSON_GetObjectItem(root, "desc");
+    if (!cJSON_IsNumber(pin) || !cJSON_IsString(name) || name->valuestring[0] == '\0') {
+        cJSON_Delete(root);
+        return send_err_json(req, "bad_args", "需要 pin 与 name");
+    }
+    if (strlen(name->valuestring) >= DEVICE_NAME_MAX) {
+        cJSON_Delete(root);
+        return send_err_json(req, "bad_name", "设备名过长");
+    }
+    if (cJSON_IsString(desc) && strlen(desc->valuestring) >= DEVICE_DESC_MAX) {
+        cJSON_Delete(root);
+        return send_err_json(req, "bad_desc", "说明过长");
+    }
+    int pin_no = pin->valueint;
+    esp_err_t err = device_define(name->valuestring, pin_no,
+                                  cJSON_IsString(desc) ? desc->valuestring : "");
+    cJSON_Delete(root);
+
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_err_json(req, "bad_pin", "引脚不可用或名称非法");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_err_json(req, "pin_used", "该引脚已被定义");
+    }
+    if (err == ESP_ERR_INVALID_SIZE) {
+        return send_err_json(req, "bad_desc", "说明过长");
+    }
+    if (err == ESP_ERR_NO_MEM) {
+        return send_err_json(req, "full", "设备数量已达上限");
+    }
+    if (err != ESP_OK) {
+        return send_err_json(req, "define_failed", esp_err_to_name(err));
+    }
+
+    const device_t *d = device_find_pin(pin_no);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    if (d != NULL) {
+        cJSON_AddStringToObject(o, "id", d->id);
+        cJSON_AddStringToObject(o, "name", d->name);
+        cJSON_AddStringToObject(o, "desc", d->desc);
+        cJSON_AddNumberToObject(o, "pin", d->pin);
+        cJSON_AddBoolToObject(o, "on", d->on);
     }
     return send_json(req, o);
 }
@@ -452,7 +548,7 @@ esp_err_t web_console_init(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = CONFIG_WEB_CONSOLE_PORT;
-    cfg.max_uri_handlers = 12;
+    cfg.max_uri_handlers = 16;
     cfg.stack_size       = 8192;
     cfg.lru_purge_enable = true;
     cfg.uri_match_fn     = httpd_uri_match_wildcard;   /* 支持通配符路径（日志下载） */
@@ -462,7 +558,8 @@ esp_err_t web_console_init(void)
     static const httpd_uri_t uris[] = {
         { .uri = "/",                .method = HTTP_GET,  .handler = h_root },
         { .uri = "/api/status",      .method = HTTP_GET,  .handler = h_status },
-        { .uri = "/api/devices",     .method = HTTP_GET,  .handler = h_devices },
+        { .uri = "/api/gpio",        .method = HTTP_GET,  .handler = h_gpio_info },
+        { .uri = "/api/gpio/define", .method = HTTP_POST, .handler = h_gpio_define },
         { .uri = "/api/device",      .method = HTTP_POST, .handler = h_device_set },
         { .uri = "/api/logs",        .method = HTTP_GET,  .handler = h_logs_list },
         { .uri = "/api/logs/*",      .method = HTTP_GET,  .handler = h_logs_get },

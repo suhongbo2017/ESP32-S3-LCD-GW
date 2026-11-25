@@ -1,7 +1,8 @@
 # 模块化 GPIO 设备扩展设计（DEVICES.md）
 
-> 状态：**部分实现** — 2026-11-25 起 `DEV_OUT` 已落地（`device_registry` + `devices/dev_gpio_out.c`，
-> Web `/api/devices` + HA `switch`）；其余类型仍为设计稿。
+> 状态：**部分实现** — 2026-11-25 起 `DEV_OUT` 已落地（`device_registry` 运行时可定义 + NVS 持久化，
+> Web `/api/gpio` 定义页 + HA `switch`）；其余类型仍为设计稿。
+> 注：`DEV_OUT` 目前由用户在网页定义，无需编译期注册；下文“加设备 = 加文件 + 注册一行”适用于后续类型。
 > 目的：将来要接新的 GPIO 外设（继电器、按钮、传感器、调光…）时，**加设备 = 加一个文件 + 注册一行**，
 > 其余（网页控件、HA 实体、MQTT 读写、历史曲线、引脚保护）全部自动获得。
 >
@@ -107,11 +108,12 @@ MQTT 主题前缀沿用现有约定：`ha/esp32gw/dev/<id>/{set,state}`。
 
 ## 5. 自动集成点（框架负责，设备无需关心）
 
-1. **web_console**
-   - `GET /api/devices` → 数组：`{id,name,kind,unit,min,max,value,readable,writable}`
-   - `GET /api/device?id=x` / `POST /api/device?id=x&value=v`
-   - 首页新增「**设备**」卡片：按 `kind` 自动渲染控件（开关/滑块/数值），周期刷新
-2. **ha_mqtt**：连接成功后按设备列表批量发 Discovery；收到 `.../set` 调 `device_set()`；周期/变化时发 `.../state`
+1. **web_console**（`DEV_OUT` 当前实现）
+   - `GET /api/gpio` → `{defined:[{id,name,pin,desc,on}], available:[pin], reserved:[{pin,reason}]}`
+   - `POST /api/gpio/define`（JSON `pin/name/desc`）、`POST /api/device?id=x&value=v`
+   - 首页「GPIO 定义」页：下拉选择空闲引脚定义；已定义与板载占用引脚以说明窗展示
+   - 后续类型沿用：按 `kind` 自动渲染控件（开关/滑块/数值），周期刷新
+2. **ha_mqtt**：连接成功后按设备列表批量发 Discovery；收到 `.../set` 调 `device_set()`；变化/连接时发 `.../state`
 3. **sensor_history**：`DEV_SENSOR && want_history` 的设备值进环形缓冲 → 复用现有曲线
 4. **tf_storage**：同上设备按周期落盘（`type=<id>`）
 5. **引脚白名单**：`device_registry` 内部统一校验（见 §8），设备**不需要**自己判断

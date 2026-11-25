@@ -46,7 +46,6 @@
 #include "app_cfg.h"
 #include "sensor_history.h"
 #include "device_registry.h"
-#include "dev_gpio_out.h"
 #include "esp_netif_sntp.h"
 
 static const char *TAG = "app_main";
@@ -377,8 +376,7 @@ void app_main(void)
     ESP_ERROR_CHECK(app_cfg_init());
     log_heap("app_cfg");
 
-    /* 0.1) 命名 GPIO 输出：Web 按钮与 HA switch 共用同一张设备表 */
-    ESP_ERROR_CHECK(dev_gpio_out_register_all());
+    /* 0.1) 运行时定义的命名 GPIO 输出：从 NVS 恢复（Web 的 GPIO 页定义） */
     ESP_ERROR_CHECK(device_registry_init());
     log_heap("devices");
 
