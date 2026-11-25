@@ -199,6 +199,7 @@ HTTP 为明文传输，且控制接口包含命名 GPIO 输出、配置、重启
 
 - Web 无 Token 鉴权，仅适用于可信、隔离的局域网；不得直接暴露到公网。
 - HTTP 服务长时间运行异常时，先用 MQTT state 判断设备是否仍在运行，再用串口抓日志。
+- 网页报 `Failed to fetch` 且串口出现 `httpd_accept_conn: error in accept (23)`：lwIP socket 耗尽；保持 `CONFIG_LWIP_MAX_SOCKETS=24`（默认 10 不够 HTTPD+MQTT+mDNS+SNTP）。
 - HTTP 不通时不要反复 OTA；先确认 TCP 80、活动 IP、ARP 和串口连接。
 - Windows 出现“能 ping 但 HTTP 不通”时，先清理 ARP 缓存并确认访问的是设备当前 IP。
 
