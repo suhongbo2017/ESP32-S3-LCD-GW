@@ -433,12 +433,12 @@ static bool dht_read(device_t *d)
 
     gpio_set_level(pin, 0);                 /* 起始信号：拉低 2ms */
     vTaskDelay(pdMS_TO_TICKS(2));
-    gpio_set_level(pin, 1);
 
     portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
     bool ok = false;
     taskENTER_CRITICAL(&mux);
-    if (dht_wait_level(pin, 0, 120) &&      /* 传感器应答低 80us */
+    gpio_set_level(pin, 1);                 /* 在临界区内释放，避免中断错过应答 */
+    if (dht_wait_level(pin, 0, 200) &&      /* 传感器应答低 80us */
         dht_wait_level(pin, 1, 120) &&      /* 高 80us */
         dht_wait_level(pin, 0, 120)) {      /* 第一位起始低 */
         ok = true;
@@ -463,6 +463,86 @@ static bool dht_read(device_t *d)
     d->valid[0] = d->valid[1] = true;
     d->value_us = esp_timer_get_time();
     return true;
+}
+
+/** 等待到指定电平，返回耗时 us；超时返回 -1 */
+static int dht_wait_us(int pin, int level, int timeout_us)
+{
+    int us = 0;
+    while (us < timeout_us && gpio_get_level(pin) != level) {
+        esp_rom_delay_us(1);
+        us++;
+    }
+    return (us < timeout_us) ? us : -1;
+}
+
+/** 测量当前电平持续时长 us；超时返回 -1 */
+static int dht_measure_us(int pin, int level, int timeout_us)
+{
+    int us = 0;
+    while (us < timeout_us && gpio_get_level(pin) == level) {
+        esp_rom_delay_us(1);
+        us++;
+    }
+    return (us < timeout_us) ? us : -1;
+}
+
+esp_err_t device_dht_debug(int pin, device_dht_debug_t *out)
+{
+    if (out == NULL || !device_pin_allowed(pin)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+    for (int i = 0; i < 40; i++) {
+        out->bit_high_us[i] = -1;
+    }
+    out->resp_low_us = -1;
+    out->resp_high_us = -1;
+
+    gpio_reset_pin(pin);
+    gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT_OD);
+    gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
+    gpio_set_level(pin, 1);
+    esp_rom_delay_us(200);
+    out->idle_level = gpio_get_level(pin);
+
+    gpio_set_level(pin, 0);
+    esp_rom_delay_us(50);
+    out->drive_low_level = gpio_get_level(pin);
+    vTaskDelay(pdMS_TO_TICKS(2));
+
+    portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    taskENTER_CRITICAL(&mux);
+    gpio_set_level(pin, 1);                 /* 临界区内释放，避免中断窗口 */
+    out->release_level = gpio_get_level(pin);
+    out->resp_low_us = dht_wait_us(pin, 0, 200);
+    if (out->resp_low_us >= 0) {
+        out->resp_high_us = dht_wait_us(pin, 1, 200);
+    }
+    if (out->resp_low_us >= 0 && out->resp_high_us >= 0) {
+        for (int i = 0; i < 40; i++) {
+            if (dht_wait_us(pin, 1, 200) < 0) {
+                break;
+            }
+            int dur = dht_measure_us(pin, 1, 200);
+            out->bit_high_us[i] = dur;
+            if (dur < 0) {
+                break;
+            }
+            out->data[i / 8] = (uint8_t)((out->data[i / 8] << 1) | (dur > 50 ? 1 : 0));
+        }
+    }
+    taskEXIT_CRITICAL(&mux);
+
+    gpio_set_level(pin, 1);
+    gpio_reset_pin(pin);
+
+    out->checksum_ok = (uint8_t)(out->data[0] + out->data[1] + out->data[2] + out->data[3]) == out->data[4];
+    uint16_t hum = (uint16_t)((out->data[0] << 8) | out->data[1]);
+    uint16_t temp = (uint16_t)(((out->data[2] & 0x7F) << 8) | out->data[3]);
+    out->hum = hum / 10.0f;
+    out->temp = temp / 10.0f * ((out->data[2] & 0x80) ? -1.0f : 1.0f);
+    return ESP_OK;
 }
 
 /* ------------------------------------------------------------------ */

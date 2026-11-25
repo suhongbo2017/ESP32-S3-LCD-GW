@@ -218,6 +218,7 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
           <span class="sub" style="width:112px">引脚</span>
           <select id="d_pin"><option value="">加载中…</option></select>
           <button class="pri" onclick="defineGpio()">定义</button>
+          <button class="sec" id="d_diag" style="display:none" onclick="dhtDiag()">DHT 诊断</button>
         </div>
         <div class="row" id="d_i2c_row" style="display:none">
           <span class="sub" style="width:112px">I2C 地址</span>
@@ -397,6 +398,7 @@ function updateDefineForm(){
   }
   const hints = {out: '数字输出', sht31: 'I2C 温湿度', sht4x: 'I2C 温湿度', bh1750: 'I2C 光照', dht22: '单总线，需 4.7k 上拉', adc: 'ADC1（GPIO1–9）'};
   $('d_type_hint').textContent = hints[kind] || '';
+  $('d_diag').style.display = (kind === 'dht22') ? '' : 'none';
   fillPinOptions();
 }
 function updateBusForm(){
@@ -519,6 +521,26 @@ async function scanBus(){
       $('bmsg').textContent = '扫描失败: ' + (j.message || j.error || '');
     }
   }catch(e){ $('bmsg').textContent = '扫描失败: ' + e; }
+}
+
+async function dhtDiag(){
+  const pin = Number($('d_pin').value);
+  if (!pin){ $('dmsg').textContent = '请选择引脚'; return; }
+  $('dmsg').textContent = '诊断中…';
+  try{
+    const j = await (await api('/api/gpio/dht_test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pin: pin})
+    })).json();
+    if (!j.ok){ $('dmsg').textContent = '诊断失败: ' + (j.message || j.error || ''); return; }
+    const resp = (j.resp_low_us >= 0)
+      ? ('应答 ' + j.resp_low_us + '/' + j.resp_high_us + 'us')
+      : '传感器无应答（DATA 未被拉低）';
+    const vals = j.checksum_ok ? (' · ' + j.temp.toFixed(1) + '℃ / ' + j.hum.toFixed(1) + '%') : ' · 校验失败';
+    $('dmsg').textContent = 'GPIO' + pin + '：空闲=' + j.idle_level + ' 拉低读回=' + j.drive_low_level +
+      ' 释放读回=' + j.release_level + ' · ' + resp + vals;
+  }catch(e){ $('dmsg').textContent = '诊断失败: ' + e; }
 }
 
 async function deviceSet(id, v){

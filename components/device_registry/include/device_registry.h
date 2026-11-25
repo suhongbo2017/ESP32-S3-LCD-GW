@@ -122,6 +122,23 @@ esp_err_t device_bus_set(int sda, int scl);
 /** 扫描 I2C 总线（8..0x77），返回发现数量；总线不可用返回 -1 */
 int device_bus_scan(uint8_t *addrs, int max);
 
+/** DHT22 诊断结果（接线/时序排查） */
+typedef struct {
+    int     idle_level;          /*!< 起始前总线电平（应为 1） */
+    int     drive_low_level;     /*!< 驱动低电平时读回（应为 0） */
+    int     release_level;       /*!< 释放后读回（应为 1） */
+    int     resp_low_us;         /*!< 传感器应答低电平时长；-1=超时 */
+    int     resp_high_us;        /*!< 应答高电平时长；-1=超时 */
+    int     bit_high_us[40];     /*!< 每个 bit 的高电平时长；-1=超时 */
+    uint8_t data[5];
+    bool    checksum_ok;
+    float   temp;
+    float   hum;
+} device_dht_debug_t;
+
+/** 对指定引脚做一次 DHT22 读取并返回详细时序（不修改设备表） */
+esp_err_t device_dht_debug(int pin, device_dht_debug_t *out);
+
 /** 板载占用引脚列表 */
 int device_reserved_count(void);
 const device_reserved_t *device_reserved_at(int idx);

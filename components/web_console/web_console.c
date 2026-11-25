@@ -10,6 +10,7 @@
  *   POST /api/gpio/remove       删除设备（JSON: id）
  *   POST /api/gpio/bus          设置 I2C 总线引脚（JSON: sda/scl）
  *   POST /api/gpio/scan         扫描 I2C 地址
+ *   POST /api/gpio/dht_test     DHT22 时序诊断（JSON: pin）
  *   POST /api/device?id=&value=0|1 设置命名设备开关
  *   GET  /api/logs              列出 TF 日志
  *   GET  /api/logs/<file>       下载 TF 日志（防目录穿越）
@@ -418,6 +419,54 @@ static esp_err_t h_gpio_scan(httpd_req_t *req)
     return send_json(req, o);
 }
 
+/** POST /api/gpio/dht_test —— 对指定引脚做 DHT22 时序诊断 */
+static esp_err_t h_gpio_dht_test(httpd_req_t *req)
+{
+    ha_mqtt_set_http_stage("dht_test");
+    char body[128];
+    if (recv_body(req, body, sizeof(body)) < 0) {
+        return send_err_json(req, "bad_body", "请求体为空或过大");
+    }
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL) {
+        return send_err_json(req, "bad_json", "JSON 解析失败");
+    }
+    cJSON *pin = cJSON_GetObjectItem(root, "pin");
+    if (!cJSON_IsNumber(pin)) {
+        cJSON_Delete(root);
+        return send_err_json(req, "bad_args", "需要 pin");
+    }
+    int pin_no = pin->valueint;
+    cJSON_Delete(root);
+
+    device_dht_debug_t d;
+    esp_err_t err = device_dht_debug(pin_no, &d);
+    if (err != ESP_OK) {
+        return send_err_json(req, "bad_pin", "引脚不可用");
+    }
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "pin", pin_no);
+    cJSON_AddNumberToObject(o, "idle_level", d.idle_level);
+    cJSON_AddNumberToObject(o, "drive_low_level", d.drive_low_level);
+    cJSON_AddNumberToObject(o, "release_level", d.release_level);
+    cJSON_AddNumberToObject(o, "resp_low_us", d.resp_low_us);
+    cJSON_AddNumberToObject(o, "resp_high_us", d.resp_high_us);
+    cJSON *bits = cJSON_AddArrayToObject(o, "bit_high_us");
+    for (int i = 0; i < 40; i++) {
+        cJSON_AddItemToArray(bits, cJSON_CreateNumber(d.bit_high_us[i]));
+    }
+    char hex[16];
+    snprintf(hex, sizeof(hex), "%02X%02X%02X%02X%02X",
+             d.data[0], d.data[1], d.data[2], d.data[3], d.data[4]);
+    cJSON_AddStringToObject(o, "data", hex);
+    cJSON_AddBoolToObject(o, "checksum_ok", d.checksum_ok);
+    cJSON_AddNumberToObject(o, "temp", d.temp);
+    cJSON_AddNumberToObject(o, "hum", d.hum);
+    return send_json(req, o);
+}
+
 /** POST /api/gpio/remove —— 删除一个已定义输出（JSON: {"id"}） */
 static esp_err_t h_gpio_remove(httpd_req_t *req)
 {
@@ -777,6 +826,7 @@ esp_err_t web_console_init(void)
         { .uri = "/api/gpio/remove", .method = HTTP_POST, .handler = h_gpio_remove },
         { .uri = "/api/gpio/bus",    .method = HTTP_POST, .handler = h_gpio_bus },
         { .uri = "/api/gpio/scan",   .method = HTTP_POST, .handler = h_gpio_scan },
+        { .uri = "/api/gpio/dht_test", .method = HTTP_POST, .handler = h_gpio_dht_test },
         { .uri = "/api/device",      .method = HTTP_POST, .handler = h_device_set },
         { .uri = "/api/logs",        .method = HTTP_GET,  .handler = h_logs_list },
         { .uri = "/api/logs/*",      .method = HTTP_GET,  .handler = h_logs_get },
