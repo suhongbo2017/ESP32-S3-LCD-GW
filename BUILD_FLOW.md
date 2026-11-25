@@ -148,8 +148,15 @@ curl --noproxy "*" -i "http://<网关IP>/api/status"
 curl --noproxy "*" -i "http://<网关IP>/api/gpio"
 curl --noproxy "*" -i "http://<网关IP>/api/logs"
 curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
-  -d "{\"pin\":4,\"name\":\"箱内灯\",\"desc\":\"继电器 IN\"}" ^
+  -d "{\"kind\":\"out\",\"pin\":4,\"name\":\"箱内灯\",\"desc\":\"继电器 IN\"}" ^
   "http://<网关IP>/api/gpio/define"
+curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
+  -d "{\"kind\":\"i2c\",\"model\":\"sht31\",\"name\":\"箱内温湿度\",\"desc\":\"0x44\"}" ^
+  "http://<网关IP>/api/gpio/define"
+curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
+  -d "{\"kind\":\"adc\",\"pin\":5,\"name\":\"声音\",\"desc\":\"包络 mV\"}" ^
+  "http://<网关IP>/api/gpio/define"
+curl --noproxy "*" -X POST "http://<网关IP>/api/gpio/scan"
 curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
   -d "{\"id\":\"gpio4\"}" ^
   "http://<网关IP>/api/gpio/remove"
@@ -184,7 +191,8 @@ HTTP 为明文传输，且控制接口包含命名 GPIO 输出、配置、重启
 
 - GPIO15 同时为 W5500 RST 和 LCD RST，LCD 驱动不得再次操作该复位 GPIO。
 - GPIO14 为 W5500 中断。
-- GPIO1–9、39–42、47–48 是命名输出白名单（`components/devices/dev_gpio_out.c`）；不要绕过设备表控制板载占用脚。
+- GPIO1–9、39–42、47–48 可做数字输出/输入；ADC 只能用 **GPIO1–9（ADC1）**。
+- I2C 默认 SDA=47/SCL=48（Web 可改）；SHT31/4x=0x44，BH1750=0x23；总线无设备时用 `POST /api/gpio/scan` 检查地址。
 - W5500 使用 SPI2，LCD 使用 SPI3；不要把两者改到同一 SPI 总线而不重新核对 CS、INT、RST。
 - 8MB PSRAM 用于 LVGL 大缓冲；不要把整帧缓冲或大内存池移回内部 RAM。
 
@@ -194,7 +202,8 @@ HTTP 为明文传输，且控制接口包含命名 GPIO 输出、配置、重启
 - MQTT 当前实测 broker 为 `192.168.99.253:1883`，匿名接入。
 - 传感器主题为 `esp32-sensor/data`，正常约 15 秒一条。
 - 传感器掉线阈值默认 120000ms，告警主题为 `ha/esp32gw/alert`。
-- 命名输出使用 `ha/esp32gw/dev/<id>/set`（命令 ON/OFF/1/0）与 `.../state`（retain）；HA 通过 Discovery 自动生成 switch。
+- 命名输出使用 `ha/esp32gw/dev/<id>/set`（命令 ON/OFF/1/0）与 `.../state`（retain）；HA 自动生成 switch。
+- 传感器使用 `ha/esp32gw/dev/<id>/state` JSON（temp/hum/lux/level），HA 按指标生成 sensor。
 - 不要把局域网设备地址通过代理访问；本机存在代理时，curl 使用 `--noproxy "*"`。
 - DHCP 地址可能变化，验证时以 MQTT state 或 `/api/status` 返回的活动 IP 为准。
 

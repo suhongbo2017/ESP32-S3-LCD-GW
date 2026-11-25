@@ -600,7 +600,8 @@ CONFIG_LCD_ST7735_SPI_CLK_HZ = 40000000；RES = 128x160；TEST_PATTERN = n
 | **HA 设备名** | **`Sensor-SU-1`**（`CONFIG_HA_MQTT_DEVICE_NAME`） | Discovery 的 device.name，实测已生效 |
 | 通知订阅主题 | `ha/esp32gw/notify` | JSON {"title","message","level":"info\|warn\|error"}；看板显示 **30s**（`CONFIG_HA_MQTT_NOTIFY_SHOW_MS=30000`） |
 | 状态发布主题 | `ha/esp32gw/state` | {"online","uplink","ip","uptime","notify_title","notify_message","http"}，心跳 5s（http=最后处理的 Web 请求，用于诊断） |
-| 设备开关主题 | `ha/esp32gw/dev/<id>/{set,state}`（`CONFIG_HA_MQTT_TOPIC_DEV_PREFIX`） | id=`light/fan/aux1/aux2`；Discovery 生成 switch，命令 ON/OFF/1/0，state retain |
+| 设备开关主题 | `ha/esp32gw/dev/<id>/{set,state}`（`CONFIG_HA_MQTT_TOPIC_DEV_PREFIX`） | 开关：Discovery 生成 switch，命令 ON/OFF/1/0，state retain |
+| 传感器状态主题 | `ha/esp32gw/dev/<id>/state` | JSON：`{"temp":..,"hum":..}` / `{"lux":..}` / `{"level":..}`；HA 按指标生成 sensor |
 | **传感器订阅主题** | **`esp32-sensor/data`**（`CONFIG_HA_MQTT_TOPIC_SENSOR`） | JSON {"temp","hum","rssi","uptime"}，现场节点约 **15s** 一条 |
 | 传感器离线判定 | **60s**（`CONFIG_HA_MQTT_SENSOR_STALE_MS`） | 超时看板显示 `温--℃ 湿--%` |
 | 看板传感器行 | y=98，`温24.2℃ 湿44.5%`，`LV_LABEL_LONG_WRAP` 兜底 | CJK 字体下约 109px，116px 内容宽内不溢出（带空格会溢出—已踩坑） |
@@ -630,8 +631,10 @@ CONFIG_LCD_ST7735_SPI_CLK_HZ = 40000000；RES = 128x160；TEST_PATTERN = n
 | mDNS 组件 | **`espressif/mdns`（组件仓库）** | ⚠️ IDF v5.x 已把 mdns 移出内核，必须用 `idf_component.yml` 声明 |
 | 鉴权 | **无 Token**（已移除） | 页面与所有 `/api/*` 可直接访问；仅限可信局域网，禁止暴露公网 |
 | GPIO 白名单 | **GPIO1–9 / 39–42 / 47–48** | 板载占用（0/10–21/26–38/43–46）在 GPIO 页作为说明窗展示，不可定义 |
-| 命名设备 | 运行时在 **GPIO 定义**页手动定义/删除 | 填写设备名、说明、选择空闲引脚；保存 NVS，上电默认关；删除需确认并同时清除 HA 实体 |
-| 接口 | `/api/status` `/api/gpio` `/api/gpio/define` `/api/gpio/remove` `/api/device` `/api/history` `/api/logs` `/api/config` `/api/reboot` `/api/ota` | `POST /api/gpio/define`（JSON pin/name/desc）、`POST /api/gpio/remove`（JSON id）、`POST /api/device?id=<id>&value=0|1` |
+| 设备类型 | 开关 / 温湿度 / 光照 / 声音 | SHT31、SHT4x（I2C 0x44）；BH1750（I2C 0x23）；声音用 ADC1 峰峰值 mV |
+| I2C 总线 | 默认 **SDA=GPIO47 / SCL=GPIO48**（Web 可改） | 100kHz，内部上拉；SHT31/4x 0x44，BH1750 0x23；可扫描地址 |
+| 模拟输入 | **仅 ADC1 = GPIO1–9** | ADC2（GPIO11–20）在 WiFi 下不可用；声音模块输出接任意 ADC1 脚 |
+| 接口 | `/api/status` `/api/gpio` `/api/gpio/define` `/api/gpio/remove` `/api/gpio/bus` `/api/gpio/scan` `/api/device` `/api/history` `/api/logs` `/api/config` `/api/reboot` `/api/ota` | `POST /api/gpio/define`（JSON kind/model/pin/name/desc）、`POST /api/gpio/bus`、`POST /api/gpio/scan`、`POST /api/device?id=<id>&value=0|1` |
 | 温湿度曲线 | **SVG 双轴**（温度左轴/湿度右轴），240 条 ≈ 1 小时，纯前端无库 | 已取代屏幕截图功能 |
 | ~~屏幕截图~~ | **已移除** | 与 `/api/status` 数据重复，日常无价值 |
 

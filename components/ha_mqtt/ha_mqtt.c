@@ -44,12 +44,13 @@ static const char *TAG = "ha_mqtt";
 #define HA_SENSOR_TASK_STACK  4096
 #define HA_SENSOR_TASK_PRIO   5
 #define HA_DEV_TOPIC_MAX      96
-#define HA_DEV_QUEUE_LEN      8
+#define HA_DEV_QUEUE_LEN      16
 
 /* 设备事件：状态变化或新定义（让 MQTT 发布脱离 HTTP/回调任务上下文） */
 typedef struct {
     bool     define;   /*!< true=新定义（发 Discovery/订阅） */
     bool     remove;   /*!< true=删除（清 Discovery/状态） */
+    bool     value;    /*!< true=传感器采样更新 */
     bool     on;
     device_t dev;
 } ha_dev_evt_t;
@@ -67,7 +68,7 @@ static QueueHandle_t s_sensor_q = NULL;
 static TaskHandle_t  s_sensor_task = NULL;
 static QueueHandle_t s_dev_q = NULL;
 static TaskHandle_t  s_dev_task = NULL;
-static volatile const char *s_http_stage = "";
+static const char *s_http_stage = "";
 static ha_sensor_handler_t s_sensor_handlers[HA_MAX_HANDLERS];
 static void *s_sensor_ctx[HA_MAX_HANDLERS];
 static ha_sensor_t s_last_sensor;           /*!< 最近一次传感器数据（rx_us==0 表示未收到过） */
@@ -172,6 +173,39 @@ static void publish_device_state(const char *id, bool on)
     esp_mqtt_client_publish(s_client, topic, payload, (int)strlen(payload), 0, 1);
 }
 
+/** 发布传感器状态 JSON（只包含有效指标） */
+static void publish_sensor_state(const device_t *d)
+{
+    if (s_client == NULL || !s_connected || d == NULL) {
+        return;
+    }
+    int n = device_metric_count(d);
+    cJSON *o = cJSON_CreateObject();
+    if (o == NULL) {
+        return;
+    }
+    bool any = false;
+    for (int i = 0; i < n; i++) {
+        if (d->valid[i]) {
+            cJSON_AddNumberToObject(o, device_metric_key(d, i), d->value[i]);
+            any = true;
+        }
+    }
+    if (!any) {
+        cJSON_Delete(o);
+        return;
+    }
+    char *payload = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    if (payload == NULL) {
+        return;
+    }
+    char topic[HA_DEV_TOPIC_MAX];
+    dev_topic(topic, sizeof(topic), d->id, "state");
+    esp_mqtt_client_publish(s_client, topic, payload, (int)strlen(payload), 0, 0);
+    free(payload);
+}
+
 /** 设备注册表变化回调：Web 或 HA 改动后投递给发布任务（不阻塞调用方） */
 static void on_device_changed(const char *id, bool on)
 {
@@ -272,6 +306,64 @@ static void discovery_switch(const device_t *d)
     ESP_LOGI(TAG, "Discovery 已发布：%s", obj_id);
 }
 
+/** 发布一个传感器指标（DEV_ADC / DEV_I2C_SENSOR）的 discovery 配置 */
+static void discovery_sensor_metric(const device_t *d, int idx)
+{
+    const char *key = device_metric_key(d, idx);
+    const char *label = device_metric_label(d, idx);
+    const char *unit = device_metric_unit(d, idx);
+
+    char obj_id[64];
+    char name[80];
+    snprintf(obj_id, sizeof(obj_id), "esp32gw_dev_%s_%s", d->id, key);
+    snprintf(name, sizeof(name), "%s %s", d->name, label);
+
+    char state_topic[HA_DEV_TOPIC_MAX];
+    dev_topic(state_topic, sizeof(state_topic), d->id, "state");
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return;
+    }
+    cJSON_AddStringToObject(root, "name", name);
+    cJSON_AddStringToObject(root, "object_id", obj_id);
+    cJSON_AddStringToObject(root, "unique_id", obj_id);
+    cJSON_AddStringToObject(root, "state_topic", state_topic);
+    char tmpl[48];
+    snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", key);
+    cJSON_AddStringToObject(root, "value_template", tmpl);
+    cJSON_AddStringToObject(root, "unit_of_measurement", unit);
+    cJSON_AddStringToObject(root, "state_class", "measurement");
+    if (strcmp(key, "temp") == 0) {
+        cJSON_AddStringToObject(root, "device_class", "temperature");
+    } else if (strcmp(key, "hum") == 0) {
+        cJSON_AddStringToObject(root, "device_class", "humidity");
+    } else if (strcmp(key, "lux") == 0) {
+        cJSON_AddStringToObject(root, "device_class", "illuminance");
+    } else {
+        cJSON_AddStringToObject(root, "icon", "mdi:waveform");
+    }
+    cJSON_AddStringToObject(root, "availability_topic", CONFIG_HA_MQTT_TOPIC_STATE);
+    cJSON_AddStringToObject(root, "availability_template",
+                            "{{ 'online' if value_json.online|default(false) else 'offline' }}");
+    cJSON *dev = cJSON_AddObjectToObject(root, "device");
+    cJSON_AddStringToObject(dev, "identifiers", "esp32gw_device");
+    cJSON_AddStringToObject(dev, "name", CONFIG_HA_MQTT_DEVICE_NAME);
+    cJSON_AddStringToObject(dev, "model", "esp32s3_gateway");
+    cJSON_AddStringToObject(dev, "manufacturer", "DIY");
+
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (payload == NULL) {
+        return;
+    }
+    char topic[96];
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", obj_id);
+    esp_mqtt_client_publish(s_client, topic, payload, (int)strlen(payload), 0, 1);
+    free(payload);
+    ESP_LOGI(TAG, "Discovery 已发布：%s", obj_id);
+}
+
 /** 连接成功后发布所有 discovery（HA 幂等，失败重连后会重发） */
 static void publish_discovery(void)
 {
@@ -281,8 +373,16 @@ static void publish_discovery(void)
     discovery_sensor("notify", "GW Notify", "{{ value_json.notify_title }}");
     for (int i = 0; i < device_count(); i++) {
         const device_t *d = device_at(i);
-        if (d != NULL && d->kind == DEV_OUT) {
+        if (d == NULL) {
+            continue;
+        }
+        if (d->kind == DEV_OUT) {
             discovery_switch(d);
+        } else {
+            int n = device_metric_count(d);
+            for (int m = 0; m < n; m++) {
+                discovery_sensor_metric(d, m);
+            }
         }
     }
 }
@@ -313,16 +413,30 @@ static void on_device_defined(const device_t *d)
 }
 
 /** 设备被删除：投递给发布任务清除 HA 实体（连接断开时保留事件，重连后处理） */
-static void on_device_removed(const char *id)
+static void on_device_removed(const device_t *d)
 {
-    if (id == NULL || s_dev_q == NULL) {
+    if (d == NULL || s_dev_q == NULL) {
         return;
     }
     ha_dev_evt_t ev = { 0 };
     ev.remove = true;
-    snprintf(ev.dev.id, sizeof(ev.dev.id), "%s", id);
+    ev.dev = *d;
     if (xQueueSend(s_dev_q, &ev, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "设备事件队列已满，丢弃删除 %s", id);
+        ESP_LOGW(TAG, "设备事件队列已满，丢弃删除 %s", d->id);
+    }
+}
+
+/** 传感器采样更新：投递给发布任务 */
+static void on_device_value(const device_t *d)
+{
+    if (d == NULL || s_dev_q == NULL) {
+        return;
+    }
+    ha_dev_evt_t ev = { 0 };
+    ev.value = true;
+    ev.dev = *d;
+    if (xQueueSend(s_dev_q, &ev, pdMS_TO_TICKS(10)) != pdTRUE) {
+        ESP_LOGW(TAG, "设备事件队列已满，丢弃采样 %s", d->id);
     }
 }
 
@@ -343,23 +457,48 @@ static void dev_pub_task(void *arg)
 
         if (ev.remove) {
             char topic[HA_DEV_TOPIC_MAX];
-            char obj_id[48];
+            char obj_id[64];
             /* 清空 retained 状态与 Discovery，让 HA 删除实体 */
             dev_topic(topic, sizeof(topic), ev.dev.id, "state");
             esp_mqtt_client_publish(s_client, topic, NULL, 0, 0, 1);
-            snprintf(obj_id, sizeof(obj_id), "esp32gw_dev_%s", ev.dev.id);
-            snprintf(topic, sizeof(topic), "homeassistant/switch/%s/config", obj_id);
-            esp_mqtt_client_publish(s_client, topic, NULL, 0, 0, 1);
-            dev_topic(topic, sizeof(topic), ev.dev.id, "set");
-            esp_mqtt_client_unsubscribe(s_client, topic);
+            if (ev.dev.kind == DEV_OUT) {
+                snprintf(obj_id, sizeof(obj_id), "esp32gw_dev_%s", ev.dev.id);
+                snprintf(topic, sizeof(topic), "homeassistant/switch/%s/config", obj_id);
+                esp_mqtt_client_publish(s_client, topic, NULL, 0, 0, 1);
+                dev_topic(topic, sizeof(topic), ev.dev.id, "set");
+                esp_mqtt_client_unsubscribe(s_client, topic);
+            } else {
+                int n = device_metric_count(&ev.dev);
+                for (int i = 0; i < n; i++) {
+                    snprintf(obj_id, sizeof(obj_id), "esp32gw_dev_%s_%s",
+                             ev.dev.id, device_metric_key(&ev.dev, i));
+                    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", obj_id);
+                    esp_mqtt_client_publish(s_client, topic, NULL, 0, 0, 1);
+                }
+            }
             ESP_LOGI(TAG, "已清除设备实体：%s", ev.dev.id);
+            continue;
+        }
+        if (ev.value) {
+            publish_sensor_state(&ev.dev);
             continue;
         }
         if (ev.define) {
 #if defined(CONFIG_HA_MQTT_DISCOVERY_ENABLE)
-            discovery_switch(&ev.dev);
+            if (ev.dev.kind == DEV_OUT) {
+                discovery_switch(&ev.dev);
+            } else {
+                int n = device_metric_count(&ev.dev);
+                for (int i = 0; i < n; i++) {
+                    discovery_sensor_metric(&ev.dev, i);
+                }
+            }
 #endif
-            subscribe_device(&ev.dev);
+            if (ev.dev.kind == DEV_OUT) {
+                subscribe_device(&ev.dev);
+            } else {
+                publish_sensor_state(&ev.dev);
+            }
         } else {
             publish_device_state(ev.dev.id, ev.on);
         }
@@ -427,8 +566,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         /* 命名设备：订阅命令主题并发布当前状态（retain） */
         for (int i = 0; i < device_count(); i++) {
             const device_t *d = device_at(i);
-            if (d != NULL && d->kind == DEV_OUT) {
+            if (d == NULL) {
+                continue;
+            }
+            if (d->kind == DEV_OUT) {
                 subscribe_device(d);
+            } else {
+                publish_sensor_state(d);
             }
         }
         publish_state(1);   /* retain 上线状态，HA 重启后也能确认在线 */
@@ -624,6 +768,8 @@ esp_err_t ha_mqtt_init(void)
     device_registry_set_define_listener(on_device_defined);
     /* 2.3) 删除设备 -> 清除 HA Discovery/状态并退订 */
     device_registry_set_remove_listener(on_device_removed);
+    /* 2.4) 传感器采样 -> 发布状态 */
+    device_registry_set_value_listener(on_device_value);
 
     /* 3) 心跳任务（周期发布 state） */
     xTaskCreate(heartbeat_task, "ha_hb", HA_HEARTBEAT_STACK, NULL,

@@ -95,6 +95,12 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
   .devcard .p{font-size:12px;color:var(--mut);margin-top:2px}
   .devcard .d{font-size:13px;margin-top:6px;min-height:18px;overflow-wrap:anywhere}
   .devcard .st{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+  .metric{display:flex;align-items:baseline;gap:7px;margin-top:6px;flex-wrap:wrap}
+  .metric .mk{font-size:12px;color:var(--mut);min-width:52px}
+  .metric .mv{font-size:20px;font-weight:650;color:var(--teal);font-variant-numeric:tabular-nums}
+  .metric .mu{font-size:12px;color:var(--mut)}
+  .metric .ma{font-size:11px;color:var(--mut);margin-left:auto}
+  .metric .ma.stale{color:var(--warn)}
   .reslist{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:8px}
   .rescard{background:var(--deep);border:1px solid var(--line);border-radius:3px;padding:8px 10px;font-size:12px;color:var(--mut);overflow-wrap:anywhere}
   .rescard b{display:block;color:var(--fg);font-size:13px;margin-bottom:2px}
@@ -192,21 +198,53 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
 
   <main class="page" id="page-gpio">
     <section class="card pane full c-teal">
-      <h2>定义新 IO <span class="msg" id="dmsg"></span></h2>
+      <h2>定义设备 <span class="msg" id="dmsg"></span></h2>
       <div class="bd">
-        <div class="row"><span class="sub" style="width:112px">设备名</span><input id="d_name" maxlength="12" placeholder="例如：箱内灯" style="flex:1"></div>
-        <div class="row"><span class="sub" style="width:112px">说明</span><input id="d_desc" maxlength="30" placeholder="例如：继电器 IN，低电平关" style="flex:1"></div>
         <div class="row">
+          <span class="sub" style="width:112px">类型</span>
+          <select id="d_kind" onchange="updateDefineForm()">
+            <option value="out">开关输出</option>
+            <option value="sht31">温湿度 · SHT31</option>
+            <option value="sht4x">温湿度 · SHT4x</option>
+            <option value="bh1750">光照 · BH1750</option>
+            <option value="adc">声音 · 模拟量</option>
+          </select>
+          <span class="msg" id="d_type_hint"></span>
+        </div>
+        <div class="row"><span class="sub" style="width:112px">设备名</span><input id="d_name" maxlength="12" placeholder="例如：箱内温湿度" style="flex:1"></div>
+        <div class="row"><span class="sub" style="width:112px">说明</span><input id="d_desc" maxlength="30" placeholder="例如：SHT31，I2C 0x44" style="flex:1"></div>
+        <div class="row" id="d_pin_row">
           <span class="sub" style="width:112px">引脚</span>
           <select id="d_pin"><option value="">加载中…</option></select>
+          <button class="pri" onclick="defineGpio()">定义</button>
+        </div>
+        <div class="row" id="d_i2c_row" style="display:none">
+          <span class="sub" style="width:112px">I2C 地址</span>
+          <input id="d_addr" style="width:90px" placeholder="0x44">
+          <span class="msg" id="d_i2c_hint"></span>
           <button class="pri" onclick="defineGpio()">定义</button>
         </div>
         <div class="msg">定义后引脚从下拉列表移除；如需更换，点已定义设备上的「删除」后重新定义（删除会关闭输出）</div>
       </div>
     </section>
 
+    <section class="card pane full c-blue">
+      <h2>I2C 总线 <span class="msg" id="bmsg"></span></h2>
+      <div class="bd">
+        <div class="row">
+          <span class="sub" style="width:112px">SDA</span>
+          <select id="b_sda"></select>
+          <span class="sub">SCL</span>
+          <select id="b_scl"></select>
+          <button class="pri" onclick="saveBus()">保存总线</button>
+          <button class="sec" onclick="scanBus()">扫描总线</button>
+        </div>
+        <div class="msg" id="b_status">加载中…</div>
+      </div>
+    </section>
+
     <section class="card pane full c-sky">
-      <h2>已定义 IO <span class="msg" id="gmsg"></span></h2>
+      <h2>已定义设备 <span class="msg" id="gmsg"></span></h2>
       <div class="bd">
         <div class="devlist" id="devs"><div class="msg">加载中…</div></div>
       </div>
@@ -221,7 +259,7 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
   </main>
 
   <div class="sub" style="margin-top:6px">
-    接口：<code>/api/status</code> <code>/api/gpio</code> <code>/api/gpio/define</code> <code>/api/gpio/remove</code> <code>/api/device</code> <code>/api/logs</code> <code>/api/history</code>
+    接口：<code>/api/status</code> <code>/api/gpio</code> <code>/api/gpio/define</code> <code>/api/gpio/remove</code> <code>/api/gpio/bus</code> <code>/api/gpio/scan</code> <code>/api/device</code> <code>/api/logs</code> <code>/api/history</code>
   </div>
 </div>
 
@@ -305,35 +343,102 @@ async function downloadLog(name){
   finally{ if (url) URL.revokeObjectURL(url); }
 }
 
-/* ---- GPIO 定义 / 已定义设备 ---- */
-let gpioData = {defined: [], available: [], reserved: []};
+/* ---- 设备定义 / 已定义设备 ---- */
+let gpioData = {defined: [], available: {out: [], adc: []}, bus: {}, reserved: []};
+function kindIsI2C(k){ return k === 'sht31' || k === 'sht4x' || k === 'bh1750'; }
+function hexAddr(a){ return '0x' + Number(a || 0).toString(16).padStart(2, '0').toUpperCase(); }
+function devTypeLabel(d){
+  if (d.kind === 0) return '开关输出 · GPIO' + d.pin;
+  if (d.kind === 1) return '声音 · GPIO' + d.pin;
+  const models = {1: 'SHT31', 2: 'SHT4x', 3: 'BH1750'};
+  return (models[d.model] || 'I2C') + ' · ' + hexAddr(d.addr);
+}
+function chipLabel(d){
+  if (d.kind === 0 || d.kind === 1) return 'GPIO' + d.pin;
+  return hexAddr(d.addr);
+}
+function fmtMetric(m){
+  if (!m.valid) return '—';
+  if (m.unit === 'lx' || m.unit === 'mV') return String(Math.round(m.value));
+  return m.value.toFixed(1);
+}
+function ageText(ms){
+  if (ms === undefined || ms < 0) return '未采样';
+  if (ms < 3000) return '刚刚';
+  if (ms < 60000) return Math.round(ms / 1000) + 's 前';
+  return Math.round(ms / 60000) + 'min 前';
+}
+function fillSelect(sel, pins, preferred){
+  const cur = sel.value;
+  sel.innerHTML = pins.length
+    ? pins.map(p => `<option value="${p}">GPIO${p}</option>`).join('')
+    : '<option value="">—</option>';
+  const vals = pins.map(String);
+  const want = vals.includes(cur) ? cur : String(preferred ?? '');
+  if (vals.includes(want)) sel.value = want;
+  else if (pins.length) sel.value = String(pins[0]);
+}
+function fillPinOptions(){
+  const kind = $('d_kind').value;
+  const avail = gpioData.available || {};
+  const pins = kind === 'adc' ? (avail.adc || []) : (avail.out || []);
+  fillSelect($('d_pin'), pins, '');
+}
+function updateDefineForm(){
+  const kind = $('d_kind').value;
+  const i2c = kindIsI2C(kind);
+  $('d_pin_row').style.display = i2c ? 'none' : '';
+  $('d_i2c_row').style.display = i2c ? '' : 'none';
+  if (i2c) {
+    $('d_addr').value = kind === 'bh1750' ? '0x23' : '0x44';
+    $('d_i2c_hint').textContent = kind === 'bh1750' ? 'BH1750 常见 0x23/0x5C' : 'SHT31/4x 常见 0x44/0x45';
+  }
+  const hints = {out: '数字输出', sht31: 'I2C 温湿度', sht4x: 'I2C 温湿度', bh1750: 'I2C 光照', adc: 'ADC1（GPIO1–9）'};
+  $('d_type_hint').textContent = hints[kind] || '';
+  fillPinOptions();
+}
+function updateBusForm(){
+  const b = gpioData.bus || {};
+  const out = (gpioData.available || {}).out || [];
+  const pins = Array.from(new Set([...out, b.sda, b.scl])).filter(p => p > 0).sort((x, y) => x - y);
+  fillSelect($('b_sda'), pins, b.sda);
+  fillSelect($('b_scl'), pins, b.scl);
+  $('b_status').textContent = b.ready
+    ? `总线就绪：SDA=GPIO${b.sda}，SCL=GPIO${b.scl}；SHT31/4x 地址 0x44，BH1750 0x23`
+    : `总线不可用（SDA=GPIO${b.sda}，SCL=GPIO${b.scl}）；检查接线与上拉后重试`;
+}
 async function loadGpio(){
   try{
     const j = await (await api('/api/gpio')).json();
     gpioData = j;
-
-    const sel = $('d_pin');
-    const cur = sel.value;
-    const avail = j.available || [];
-    sel.innerHTML = avail.length
-      ? avail.map(p => `<option value="${p}">GPIO${p}</option>`).join('')
-      : '<option value="">无可用引脚</option>';
-    if (avail.map(String).includes(cur)) sel.value = cur;
+    updateDefineForm();
+    updateBusForm();
 
     const def = j.defined || [];
     $('devs').innerHTML = def.length
-      ? def.map(d => `
-        <div class="devcard">
-          <div class="n">${esc(d.name)}</div>
-          <div class="p">GPIO${d.pin} · ${esc(d.id)}</div>
-          <div class="d">${d.desc ? esc(d.desc) : '（无说明）'}</div>
-          <div class="st">
-            <span class="msg">当前 <b class="${d.on ? 'ok' : 'bad'}">${d.on ? '开' : '关'}</b></span>
-            <button class="${d.on ? 'sec' : 'pri'}" onclick="deviceSet('${esc(d.id)}',${d.on ? 0 : 1})">${d.on ? '关闭' : '打开'}</button>
-            <button class="sec" onclick="removeGpio('${esc(d.id)}')">删除</button>
-          </div>
-        </div>`).join('')
-      : '<div class="msg">尚未定义任何 IO。选择引脚、填写设备名后点“定义”。</div>';
+      ? def.map(d => {
+          const metrics = (d.metrics || []).map(m => `
+            <div class="metric">
+              <span class="mk">${esc(m.label)}</span>
+              <b class="mv">${fmtMetric(m)}</b><span class="mu">${esc(m.unit)}</span>
+              <span class="ma ${d.age_ms > 5000 ? 'stale' : ''}">${ageText(d.age_ms)}</span>
+            </div>`).join('');
+          const control = d.kind === 0
+            ? `<span class="msg">当前 <b class="${d.on ? 'ok' : 'bad'}">${d.on ? '开' : '关'}</b></span>
+               <button class="${d.on ? 'sec' : 'pri'}" onclick="deviceSet('${esc(d.id)}',${d.on ? 0 : 1})">${d.on ? '关闭' : '打开'}</button>`
+            : '';
+          return `
+            <div class="devcard">
+              <div class="n">${esc(d.name)}</div>
+              <div class="p">${esc(devTypeLabel(d))}</div>
+              <div class="d">${d.desc ? esc(d.desc) : '（无说明）'}</div>
+              ${metrics}
+              <div class="st">${control}
+                <button class="sec" onclick="removeGpio('${esc(d.id)}')">删除</button>
+              </div>
+            </div>`;
+        }).join('')
+      : '<div class="msg">尚未定义设备。选择类型、填写名称后点“定义”。</div>';
 
     $('reserved').innerHTML = (j.reserved || [])
       .map(r => `<div class="rescard"><b>GPIO${r.pin}</b>${esc(r.reason)}</div>`).join('');
@@ -343,21 +448,35 @@ async function loadGpio(){
 }
 
 async function defineGpio(){
-  const pin = Number($('d_pin').value);
+  const raw = $('d_kind').value;
   const name = $('d_name').value.trim();
   const desc = $('d_desc').value.trim();
   if (!name){ $('dmsg').textContent = '请填写设备名'; return; }
-  if (!pin){ $('dmsg').textContent = '没有可用引脚'; return; }
+  const body = { name: name, desc: desc };
+  if (kindIsI2C(raw)) {
+    body.kind = 'i2c';
+    body.model = raw;
+    const a = $('d_addr').value.trim();
+    if (a) {
+      const addr = Number(a);
+      if (!Number.isFinite(addr) || addr < 8 || addr > 0x77){ $('dmsg').textContent = 'I2C 地址非法'; return; }
+      body.addr = addr;
+    }
+  } else {
+    body.kind = raw === 'adc' ? 'adc' : 'out';
+    body.pin = Number($('d_pin').value);
+    if (!body.pin){ $('dmsg').textContent = '没有可用引脚'; return; }
+  }
   $('dmsg').textContent = '定义中…';
   try{
     const r = await api('/api/gpio/define', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({pin: pin, name: name, desc: desc})
+      body: JSON.stringify(body)
     });
     const j = await r.json();
     if (j.ok){
-      $('dmsg').textContent = '已定义 ' + j.name + '（GPIO' + j.pin + '）';
+      $('dmsg').textContent = '已定义 ' + name;
       $('d_name').value = '';
       $('d_desc').value = '';
       loadGpio();
@@ -365,6 +484,39 @@ async function defineGpio(){
       $('dmsg').textContent = '失败: ' + (j.message || j.error || ('HTTP ' + r.status));
     }
   }catch(e){ $('dmsg').textContent = '失败: ' + e; }
+}
+
+async function saveBus(){
+  const sda = Number($('b_sda').value);
+  const scl = Number($('b_scl').value);
+  if (!sda || !scl){ $('bmsg').textContent = '请选择 SDA/SCL'; return; }
+  $('bmsg').textContent = '保存中…';
+  try{
+    const j = await (await api('/api/gpio/bus', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sda: sda, scl: scl})
+    })).json();
+    if (j.ok){
+      $('bmsg').textContent = '总线已保存';
+      loadGpio();
+    } else {
+      $('bmsg').textContent = '失败: ' + (j.message || j.error || '');
+    }
+  }catch(e){ $('bmsg').textContent = '失败: ' + e; }
+}
+
+async function scanBus(){
+  $('bmsg').textContent = '扫描中…';
+  try{
+    const j = await (await api('/api/gpio/scan', {method:'POST'})).json();
+    if (j.ok){
+      const list = j.addresses || [];
+      $('bmsg').textContent = list.length ? ('发现：' + list.join(' ')) : '总线上未发现设备';
+    } else {
+      $('bmsg').textContent = '扫描失败: ' + (j.message || j.error || '');
+    }
+  }catch(e){ $('bmsg').textContent = '扫描失败: ' + e; }
 }
 
 async function deviceSet(id, v){
@@ -377,8 +529,8 @@ async function deviceSet(id, v){
 
 async function removeGpio(id){
   const d = (gpioData.defined || []).find(x => x.id === id);
-  const label = d ? (d.name + '（GPIO' + d.pin + '）') : id;
-  if (!confirm('确定删除「' + label + '」？\n\n删除后该 GPIO 会关闭并回到可选列表，可从下拉框重新定义。')) return;
+  const label = d ? (d.name + '（' + devTypeLabel(d).split(' · ')[0] + ' ' + chipLabel(d) + '）') : id;
+  if (!confirm('确定删除「' + label + '」？\n\n删除后该引脚/实体将释放，可从下拉框重新定义。')) return;
   try{
     const j = await (await api('/api/gpio/remove', {
       method: 'POST',
@@ -504,7 +656,7 @@ refresh(); loadLogs(); cfgLoad(); drawChart(); loadGpio();
 showPage(localStorage.getItem('gateway-page') || 'info');
 setInterval(refresh, 2000);
 setInterval(drawChart, 30000);
-setInterval(() => { if ($('page-gpio').classList.contains('active')) loadGpio(); }, 10000);
+setInterval(() => { if ($('page-gpio').classList.contains('active')) loadGpio(); }, 3000);
 </script>
 </body>
 </html>)HTML";

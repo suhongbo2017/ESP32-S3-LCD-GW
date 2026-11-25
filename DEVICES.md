@@ -1,7 +1,7 @@
 # 模块化 GPIO 设备扩展设计（DEVICES.md）
 
-> 状态：**部分实现** — 2026-11-25 起 `DEV_OUT` 已落地（`device_registry` 运行时可定义 + NVS 持久化，
-> Web `/api/gpio` 定义页 + HA `switch`）；其余类型仍为设计稿。
+> 状态：**部分实现** — 2026-11-25 起 `DEV_OUT`、`DEV_ADC`、`DEV_I2C_SENSOR`
+> （SHT31/SHT4x/BH1750）已落地（运行时定义 + NVS，Web/HA 自动集成）；其余类型仍为设计稿。
 > 注：`DEV_OUT` 目前由用户在网页定义，无需编译期注册；下文“加设备 = 加文件 + 注册一行”适用于后续类型。
 > 目的：将来要接新的 GPIO 外设（继电器、按钮、传感器、调光…）时，**加设备 = 加一个文件 + 注册一行**，
 > 其余（网页控件、HA 实体、MQTT 读写、历史曲线、引脚保护）全部自动获得。
@@ -110,7 +110,7 @@ MQTT 主题前缀沿用现有约定：`ha/esp32gw/dev/<id>/{set,state}`。
 
 1. **web_console**（`DEV_OUT` 当前实现）
    - `GET /api/gpio` → `{defined:[{id,name,pin,desc,on}], available:[pin], reserved:[{pin,reason}]}`
-   - `POST /api/gpio/define`（JSON `pin/name/desc`）、`POST /api/gpio/remove`（JSON `id`）、`POST /api/device?id=x&value=v`
+   - `POST /api/gpio/define`（JSON `kind/model/pin/name/desc`）、`POST /api/gpio/remove`、`POST /api/gpio/bus`、`POST /api/gpio/scan`、`POST /api/device?id=x&value=v`
    - 首页「GPIO 定义」页：下拉选择空闲引脚定义；已定义与板载占用引脚以说明窗展示
    - 后续类型沿用：按 `kind` 自动渲染控件（开关/滑块/数值），周期刷新
 2. **ha_mqtt**：连接成功后按设备列表批量发 Discovery；收到 `.../set` 调 `device_set()`；变化/连接时发 `.../state`

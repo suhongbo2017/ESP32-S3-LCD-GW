@@ -4,5 +4,5 @@
 idf_component_register(
     SRCS "device_registry.c"
     INCLUDE_DIRS "include"
-    REQUIRES driver json nvs_flash log esp_common freertos
+    REQUIRES driver esp_driver_i2c esp_adc json nvs_flash log esp_timer esp_common freertos
 )

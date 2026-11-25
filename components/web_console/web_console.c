@@ -7,7 +7,9 @@
  *   GET  /api/status            状态 JSON
  *   GET  /api/gpio              已定义设备 / 可定义引脚 / 板载占用引脚
  *   POST /api/gpio/define       定义命名输出（JSON: pin/name/desc）
- *   POST /api/gpio/remove       删除命名输出（JSON: id）
+ *   POST /api/gpio/remove       删除设备（JSON: id）
+ *   POST /api/gpio/bus          设置 I2C 总线引脚（JSON: sda/scl）
+ *   POST /api/gpio/scan         扫描 I2C 地址
  *   POST /api/device?id=&value=0|1 设置命名设备开关
  *   GET  /api/logs              列出 TF 日志
  *   GET  /api/logs/<file>       下载 TF 日志（防目录穿越）
@@ -135,7 +137,40 @@ static esp_err_t h_status(httpd_req_t *req)
     return send_json(req, o);
 }
 
-/** GET /api/gpio —— 已定义设备 / 可定义引脚 / 板载占用引脚 */
+/** 把设备写入 JSON（列表/定义返回共用） */
+static void fill_device_json(cJSON *it, const device_t *d)
+{
+    cJSON_AddStringToObject(it, "id", d->id);
+    cJSON_AddStringToObject(it, "name", d->name);
+    cJSON_AddStringToObject(it, "desc", d->desc);
+    cJSON_AddNumberToObject(it, "kind", (double)d->kind);
+    cJSON_AddNumberToObject(it, "model", (double)d->model);
+    cJSON_AddNumberToObject(it, "addr", (double)d->addr);
+    cJSON_AddNumberToObject(it, "pin", d->pin);
+    cJSON_AddBoolToObject(it, "on", d->on);
+
+    int n = device_metric_count(d);
+    if (n > 0) {
+        cJSON *arr = cJSON_AddArrayToObject(it, "metrics");
+        for (int i = 0; i < n; i++) {
+            cJSON *m = cJSON_CreateObject();
+            cJSON_AddStringToObject(m, "key", device_metric_key(d, i));
+            cJSON_AddStringToObject(m, "label", device_metric_label(d, i));
+            cJSON_AddStringToObject(m, "unit", device_metric_unit(d, i));
+            cJSON_AddBoolToObject(m, "valid", d->valid[i]);
+            cJSON_AddNumberToObject(m, "value", d->valid[i] ? (double)d->value[i] : 0.0);
+            cJSON_AddItemToArray(arr, m);
+        }
+    }
+    if (d->value_us > 0) {
+        double age_ms = (double)((esp_timer_get_time() - d->value_us) / 1000);
+        cJSON_AddNumberToObject(it, "age_ms", age_ms);
+    } else {
+        cJSON_AddNumberToObject(it, "age_ms", -1);
+    }
+}
+
+/** GET /api/gpio —— 设备 / 可定义引脚 / 总线配置 / 板载占用引脚 */
 static esp_err_t h_gpio_info(httpd_req_t *req)
 {
     ha_mqtt_set_http_stage("gpio");
@@ -148,26 +183,48 @@ static esp_err_t h_gpio_info(httpd_req_t *req)
         if (d == NULL) {
             continue;
         }
-        bool on = false;
-        device_get(d->id, &on);
         cJSON *it = cJSON_CreateObject();
-        cJSON_AddStringToObject(it, "id", d->id);
-        cJSON_AddStringToObject(it, "name", d->name);
-        cJSON_AddStringToObject(it, "desc", d->desc);
-        cJSON_AddNumberToObject(it, "pin", d->pin);
-        cJSON_AddBoolToObject(it, "on", on);
+        fill_device_json(it, d);
         cJSON_AddItemToArray(def, it);
     }
 
-    cJSON *avail = cJSON_AddArrayToObject(o, "available");
+    int sda = 0, scl = 0;
+    bool bus_ready = false;
+    device_bus_get(&sda, &scl, &bus_ready);
+    bool used[64] = { false };
+    if (sda > 0 && sda < 64) used[sda] = true;
+    if (scl > 0 && scl < 64) used[scl] = true;
+    for (int i = 0; i < device_count(); i++) {
+        const device_t *d = device_at(i);
+        if (d != NULL && (d->kind == DEV_OUT || d->kind == DEV_ADC) &&
+            d->pin >= 0 && d->pin < 64) {
+            used[d->pin] = true;
+        }
+    }
+
+    cJSON *avail = cJSON_AddObjectToObject(o, "available");
+    cJSON *aout = cJSON_AddArrayToObject(avail, "out");
+    cJSON *aadc = cJSON_AddArrayToObject(avail, "adc");
     for (int pin = 0; pin <= 48; pin++) {
-        if (device_pin_allowed(pin) && device_find_pin(pin) == NULL) {
-            cJSON *n = cJSON_CreateNumber(pin);
-            if (n != NULL) {
-                cJSON_AddItemToArray(avail, n);
+        if (!device_pin_allowed(pin) || used[pin]) {
+            continue;
+        }
+        cJSON *n = cJSON_CreateNumber(pin);
+        if (n != NULL) {
+            cJSON_AddItemToArray(aout, n);
+        }
+        if (device_adc_pin_allowed(pin)) {
+            cJSON *m = cJSON_CreateNumber(pin);
+            if (m != NULL) {
+                cJSON_AddItemToArray(aadc, m);
             }
         }
     }
+
+    cJSON *bus = cJSON_AddObjectToObject(o, "bus");
+    cJSON_AddNumberToObject(bus, "sda", sda);
+    cJSON_AddNumberToObject(bus, "scl", scl);
+    cJSON_AddBoolToObject(bus, "ready", bus_ready);
 
     cJSON *res = cJSON_AddArrayToObject(o, "reserved");
     for (int i = 0; i < device_reserved_count(); i++) {
@@ -202,7 +259,7 @@ static int recv_body(httpd_req_t *req, char *buf, size_t cap)
     return got;
 }
 
-/** POST /api/gpio/define —— 定义一个命名输出（JSON: {"pin","name","desc"}） */
+/** POST /api/gpio/define —— 定义设备（JSON: kind/model/pin/addr/name/desc） */
 static esp_err_t h_gpio_define(httpd_req_t *req)
 {
     ha_mqtt_set_http_stage("define");
@@ -215,12 +272,16 @@ static esp_err_t h_gpio_define(httpd_req_t *req)
     if (root == NULL) {
         return send_err_json(req, "bad_json", "JSON 解析失败");
     }
-    cJSON *pin = cJSON_GetObjectItem(root, "pin");
     cJSON *name = cJSON_GetObjectItem(root, "name");
     cJSON *desc = cJSON_GetObjectItem(root, "desc");
-    if (!cJSON_IsNumber(pin) || !cJSON_IsString(name) || name->valuestring[0] == '\0') {
+    cJSON *kind = cJSON_GetObjectItem(root, "kind");
+    cJSON *model = cJSON_GetObjectItem(root, "model");
+    cJSON *pin = cJSON_GetObjectItem(root, "pin");
+    cJSON *addr = cJSON_GetObjectItem(root, "addr");
+
+    if (!cJSON_IsString(name) || name->valuestring[0] == '\0') {
         cJSON_Delete(root);
-        return send_err_json(req, "bad_args", "需要 pin 与 name");
+        return send_err_json(req, "bad_args", "需要 name");
     }
     if (strlen(name->valuestring) >= DEVICE_NAME_MAX) {
         cJSON_Delete(root);
@@ -230,36 +291,127 @@ static esp_err_t h_gpio_define(httpd_req_t *req)
         cJSON_Delete(root);
         return send_err_json(req, "bad_desc", "说明过长");
     }
-    int pin_no = pin->valueint;
-    esp_err_t err = device_define(name->valuestring, pin_no,
-                                  cJSON_IsString(desc) ? desc->valuestring : "");
+
+    const char *kind_s = cJSON_IsString(kind) ? kind->valuestring : "out";
+    const char *model_s = cJSON_IsString(model) ? model->valuestring : "";
+    dev_def_t def = { 0 };
+    def.name = name->valuestring;
+    def.desc = cJSON_IsString(desc) ? desc->valuestring : "";
+    def.pin = cJSON_IsNumber(pin) ? pin->valueint : -1;
+    def.addr = cJSON_IsNumber(addr) ? (uint8_t)addr->valueint : 0;
+
+    bool kind_ok = true;
+    if (strcmp(kind_s, "out") == 0) {
+        def.kind = DEV_OUT;
+    } else if (strcmp(kind_s, "adc") == 0) {
+        def.kind = DEV_ADC;
+    } else if (strcmp(kind_s, "i2c") == 0) {
+        def.kind = DEV_I2C_SENSOR;
+        if (strcmp(model_s, "sht31") == 0) {
+            def.model = SENSOR_SHT31;
+        } else if (strcmp(model_s, "sht4x") == 0) {
+            def.model = SENSOR_SHT4X;
+        } else if (strcmp(model_s, "bh1750") == 0) {
+            def.model = SENSOR_BH1750;
+        } else {
+            kind_ok = false;
+        }
+    } else {
+        kind_ok = false;
+    }
+    if (!kind_ok) {
+        cJSON_Delete(root);
+        return send_err_json(req, "bad_kind", "未知设备类型/型号");
+    }
+
+    esp_err_t err = device_define(&def);
     cJSON_Delete(root);
 
     if (err == ESP_ERR_INVALID_ARG) {
-        return send_err_json(req, "bad_pin", "引脚不可用或名称非法");
+        return send_err_json(req, "bad_pin", "引脚/型号不可用或参数非法");
     }
     if (err == ESP_ERR_INVALID_STATE) {
-        return send_err_json(req, "pin_used", "该引脚已被定义");
+        if (def.kind == DEV_I2C_SENSOR) {
+            return send_err_json(req, "i2c_error", "I2C 总线不可用或地址重复");
+        }
+        return send_err_json(req, "pin_used", "该引脚已被占用");
     }
     if (err == ESP_ERR_INVALID_SIZE) {
-        return send_err_json(req, "bad_desc", "说明过长");
+        return send_err_json(req, "bad_name", "名称过长");
     }
     if (err == ESP_ERR_NO_MEM) {
         return send_err_json(req, "full", "设备数量已达上限");
+    }
+    if (err == ESP_ERR_NOT_FOUND) {
+        return send_err_json(req, "sensor_not_found", "传感器无应答（检查接线/地址）");
     }
     if (err != ESP_OK) {
         return send_err_json(req, "define_failed", esp_err_to_name(err));
     }
 
-    const device_t *d = device_find_pin(pin_no);
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
-    if (d != NULL) {
-        cJSON_AddStringToObject(o, "id", d->id);
-        cJSON_AddStringToObject(o, "name", d->name);
-        cJSON_AddStringToObject(o, "desc", d->desc);
-        cJSON_AddNumberToObject(o, "pin", d->pin);
-        cJSON_AddBoolToObject(o, "on", d->on);
+    return send_json(req, o);
+}
+
+/** POST /api/gpio/bus —— 设置 I2C 总线引脚（JSON: {"sda","scl"}） */
+static esp_err_t h_gpio_bus(httpd_req_t *req)
+{
+    ha_mqtt_set_http_stage("bus");
+    char body[128];
+    if (recv_body(req, body, sizeof(body)) < 0) {
+        return send_err_json(req, "bad_body", "请求体为空或过大");
+    }
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL) {
+        return send_err_json(req, "bad_json", "JSON 解析失败");
+    }
+    cJSON *sda = cJSON_GetObjectItem(root, "sda");
+    cJSON *scl = cJSON_GetObjectItem(root, "scl");
+    if (!cJSON_IsNumber(sda) || !cJSON_IsNumber(scl)) {
+        cJSON_Delete(root);
+        return send_err_json(req, "bad_args", "需要 sda 与 scl");
+    }
+    int sda_no = sda->valueint;
+    int scl_no = scl->valueint;
+    cJSON_Delete(root);
+
+    esp_err_t err = device_bus_set(sda_no, scl_no);
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_err_json(req, "bad_pin", "SDA/SCL 必须是可用且不同的引脚");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_err_json(req, "pin_used", "引脚已被现有设备占用");
+    }
+    if (err != ESP_OK) {
+        return send_err_json(req, "bus_error", esp_err_to_name(err));
+    }
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON *bus = cJSON_AddObjectToObject(o, "bus");
+    cJSON_AddNumberToObject(bus, "sda", sda_no);
+    cJSON_AddNumberToObject(bus, "scl", scl_no);
+    cJSON_AddBoolToObject(bus, "ready", true);
+    return send_json(req, o);
+}
+
+/** POST /api/gpio/scan —— 扫描 I2C 总线 */
+static esp_err_t h_gpio_scan(httpd_req_t *req)
+{
+    ha_mqtt_set_http_stage("scan");
+    uint8_t found[16];
+    int n = device_bus_scan(found, (int)(sizeof(found) / sizeof(found[0])));
+    if (n < 0) {
+        return send_err_json(req, "bus_error", "I2C 总线不可用");
+    }
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON *arr = cJSON_AddArrayToObject(o, "addresses");
+    for (int i = 0; i < n; i++) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "0x%02X", found[i]);
+        cJSON_AddItemToArray(arr, cJSON_CreateString(buf));
     }
     return send_json(req, o);
 }
@@ -621,6 +773,8 @@ esp_err_t web_console_init(void)
         { .uri = "/api/gpio",        .method = HTTP_GET,  .handler = h_gpio_info },
         { .uri = "/api/gpio/define", .method = HTTP_POST, .handler = h_gpio_define },
         { .uri = "/api/gpio/remove", .method = HTTP_POST, .handler = h_gpio_remove },
+        { .uri = "/api/gpio/bus",    .method = HTTP_POST, .handler = h_gpio_bus },
+        { .uri = "/api/gpio/scan",   .method = HTTP_POST, .handler = h_gpio_scan },
         { .uri = "/api/device",      .method = HTTP_POST, .handler = h_device_set },
         { .uri = "/api/logs",        .method = HTTP_GET,  .handler = h_logs_list },
         { .uri = "/api/logs/*",      .method = HTTP_GET,  .handler = h_logs_get },
