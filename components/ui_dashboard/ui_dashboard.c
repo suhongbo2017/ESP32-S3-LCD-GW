@@ -52,6 +52,7 @@ static const char *TAG = "ui_dashboard";
 #define UI_REFRESH_MS   1000              /*!< 运行时长/状态周期刷新 */
 #define UI_TASK_STACK   4096
 #define UI_TASK_PRIO    6
+#define UI_LVGL_LOCK_TIMEOUT_MS  20              /*!< 避免 LVGL 锁异常时阻塞业务任务 */
 
 static TaskHandle_t s_task = NULL;                                      /*!< 刷新任务 */
 static uint32_t s_ui_w = UI_W;      /*!< 旋转后的显示宽（默认 128） */
@@ -150,7 +151,7 @@ static void ui_refresh(const net_manager_status_t *st, bool uptime_only)
 /** 显示 HA 通知 banner（覆盖 KPI 区，标题与左边框按 level 着色） */
 static void ui_show_notify(const ha_notify_t *n)
 {
-    if (!lvgl_port_lock(0)) {
+    if (!lvgl_port_lock(UI_LVGL_LOCK_TIMEOUT_MS)) {
         return;
     }
     /* level 主题色：info 浅蓝 / warn 橙 / error 红 */
@@ -212,7 +213,7 @@ static void ui_sensor_handler(const ha_sensor_t *sn, void *user_ctx)
     s_sensor = *sn;
     s_sensor_has = true;
     s_sensor_stale = false;
-    if (!lvgl_port_lock(0)) {
+    if (!lvgl_port_lock(UI_LVGL_LOCK_TIMEOUT_MS)) {
         return;   /* 下一轮周期任务兜底 */
     }
     ui_update_sensor_label(false);
@@ -238,7 +239,7 @@ void ui_dashboard_show_notify(const char *title, const char *message, int level)
 static void ui_net_listener(net_manager_status_t *st, void *user_ctx)
 {
     (void)user_ctx;
-    if (!lvgl_port_lock(0)) {
+    if (!lvgl_port_lock(UI_LVGL_LOCK_TIMEOUT_MS)) {
         return;    /* 锁获取失败：跳过本次刷新（下一轮任务兜底） */
     }
     ui_refresh(st, false);
@@ -256,7 +257,7 @@ static void ui_refresh_task(void *arg)
 
         /* 先取网络快照，再加锁刷 UI：避免持 LVGL 锁去取网络状态造成锁序死锁 */
         net_manager_status_t st = net_manager_get_status();
-        if (!lvgl_port_lock(0)) {
+        if (!lvgl_port_lock(UI_LVGL_LOCK_TIMEOUT_MS)) {
             continue;
         }
         ui_refresh(&st, false);
@@ -398,7 +399,7 @@ static void ui_ha_notify_handler(const ha_notify_t *notify, void *user_ctx)
  * ------------------------------------------------------------------------- */
 uint8_t *ui_dashboard_copy_framebuffer(int *w, int *h, int *stride)
 {
-    if (s_disp == NULL || !lvgl_port_lock(0)) {
+    if (s_disp == NULL || !lvgl_port_lock(UI_LVGL_LOCK_TIMEOUT_MS)) {
         return NULL;
     }
     uint8_t *out = NULL;
@@ -500,7 +501,7 @@ esp_err_t ui_dashboard_init(void)
 
     /* 5) 创建控件并做首次刷新（快照在锁外获取，避免锁序问题） */
     net_manager_status_t st0 = net_manager_get_status();
-    if (!lvgl_port_lock(0)) {
+    if (!lvgl_port_lock(UI_LVGL_LOCK_TIMEOUT_MS)) {
         ESP_LOGE(TAG, "LVGL 锁获取失败");
         return ESP_FAIL;
     }
