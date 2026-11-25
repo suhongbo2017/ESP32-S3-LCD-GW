@@ -21,10 +21,15 @@
  */
 #include "ui_dashboard.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_log.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "device_registry.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "sdkconfig.h"    /* CONFIG_LCD_ST7735_ROTATION_*：使看板方向与面板驱动一致 */
@@ -66,82 +71,182 @@ static bool       s_notify_active = false;/*!< 当前是否处于通知显示期
 static uint64_t   s_notify_until_us = 0;  /*!< 通知恢复截止时刻（esp_timer） */
 
 /* LVGL 控件句柄 */
-static lv_obj_t *s_lbl_uplink = NULL;   /*!< 当前上行链路（ETH/WiFi/None，带颜色） */
-static lv_obj_t *s_lbl_ip     = NULL;   /*!< 当前上行 IP */
-static lv_obj_t *s_lbl_eth    = NULL;   /*!< 有线可用状态 */
-static lv_obj_t *s_lbl_wifi   = NULL;   /*!< Wi-Fi 可用状态 */
-static lv_obj_t *s_lbl_uptime = NULL;   /*!< 运行时长 */
-static lv_obj_t *s_lbl_sensor = NULL;   /*!< 传感器 温/湿 行 */
-static ha_sensor_t s_sensor;            /*!< 最近一次传感器数据 */
-static bool s_sensor_has   = false;     /*!< 是否收到过传感器数据 */
-static bool s_sensor_stale = false;     /*!< 当前是否处于离线（超时）状态 */
+static lv_obj_t *s_lbl_body = NULL;     /*!< 可配置内容区（多行文本） */
+static ha_sensor_t s_sensor;            /*!< MQTT 传感器数据（无自定义传感器时兜底） */
+static bool s_sensor_has   = false;
 static lv_display_t *s_disp = NULL;     /*!< LVGL 显示设备（供截图使用） */
 
 static uint64_t s_boot_us = 0;          /*!< 启动时刻（esp_timer 单调时钟） */
 
+#define UI_ITEMS_NS   "uiscreen"
+#define UI_BODY_LINES 8
+static uint32_t s_items = UI_SCREEN_TEMP_HUM | UI_SCREEN_IP |
+                          UI_SCREEN_UPLINK | UI_SCREEN_LINK | UI_SCREEN_UPTIME;
+
 /* ---------------------------------------------------------------------------
- * UI 刷新（必须在持 lvgl_port_lock 的情况下调用）
+ * 内容拼装（128x160，CJK 字体；最多 8 行）
  * ------------------------------------------------------------------------- */
 
-/** 上行链路值与颜色 */
-static void ui_set_uplink(const net_manager_status_t *st)
+static void body_append(char *out, size_t n, size_t *used, int *lines, const char *fmt, ...)
 {
-    switch (st->active) {
-    case NET_BACKEND_ETH:
-        lv_label_set_text(s_lbl_uplink, "Uplink: ETH");
-        lv_obj_set_style_text_color(s_lbl_uplink, lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
-        break;
-    case NET_BACKEND_WIFI:
-        lv_label_set_text(s_lbl_uplink, "Uplink: WIFI");
-        lv_obj_set_style_text_color(s_lbl_uplink, lv_palette_main(LV_PALETTE_ORANGE), LV_PART_MAIN);
-        break;
-    default:
-        lv_label_set_text(s_lbl_uplink, "Uplink: NONE");
-        lv_obj_set_style_text_color(s_lbl_uplink, lv_palette_main(LV_PALETTE_RED), LV_PART_MAIN);
-        break;
+    if (*lines >= UI_BODY_LINES) {
+        return;
+    }
+    int prefix = (*lines > 0) ? snprintf(out + *used, n - *used, "\n") : 0;
+    *used += (size_t)prefix;
+    va_list ap;
+    va_start(ap, fmt);
+    int k = vsnprintf(out + *used, n - *used, fmt, ap);
+    va_end(ap);
+    if (k > 0) {
+        *used += (size_t)k;
+        if (*used >= n) {
+            *used = n - 1;
+        }
+    }
+    (*lines)++;
+}
+
+/** 把 UTF-8 字符串截断到不超过 max 字节（不切断多字节字符） */
+static void utf8_copy(char *dst, size_t dst_size, const char *src, size_t max_bytes)
+{
+    size_t limit = max_bytes < dst_size - 1 ? max_bytes : dst_size - 1;
+    size_t len = 0;
+    while (src[len] != '\0' && len < limit) {
+        unsigned char c = (unsigned char)src[len];
+        size_t clen = (c < 0x80) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+        if (len + clen > limit) {
+            break;
+        }
+        len += clen;
+    }
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
+/** 取第一个有效的温湿度传感器；没有则用 MQTT 节点数据 */
+static bool latest_temp_hum(float *t, float *h)
+{
+    for (int i = 0; i < device_count(); i++) {
+        const device_t *d = device_at(i);
+        if (d == NULL || device_metric_count(d) < 2) {
+            continue;
+        }
+        if (strcmp(device_metric_key(d, 0), "temp") == 0 &&
+            d->valid[0] && d->valid[1]) {
+            *t = d->value[0];
+            *h = d->value[1];
+            return true;
+        }
+    }
+    if (s_sensor_has &&
+        (esp_timer_get_time() - s_sensor.rx_us) <=
+            (int64_t)CONFIG_HA_MQTT_SENSOR_STALE_MS * 1000) {
+        *t = s_sensor.temp;
+        *h = s_sensor.hum;
+        return true;
+    }
+    return false;
+}
+
+static int fixed_line_count(uint32_t items)
+{
+    int n = 0;
+    n += (items & UI_SCREEN_TEMP_HUM) ? 1 : 0;
+    n += (items & UI_SCREEN_IP) ? 1 : 0;
+    n += (items & UI_SCREEN_DATETIME) ? 1 : 0;
+    n += (items & UI_SCREEN_UPLINK) ? 1 : 0;
+    n += (items & UI_SCREEN_LINK) ? 1 : 0;
+    n += (items & UI_SCREEN_UPTIME) ? 1 : 0;
+    return n;
+}
+
+static void compose_body(char *out, size_t n, const net_manager_status_t *st)
+{
+    out[0] = '\0';
+    size_t used = 0;
+    int lines = 0;
+    const uint32_t items = s_items;
+
+    if (items & UI_SCREEN_TEMP_HUM) {
+        float t, h;
+        if (latest_temp_hum(&t, &h)) {
+            body_append(out, n, &used, &lines, "温%.1f℃ 湿%.1f%%", t, h);
+        } else {
+            body_append(out, n, &used, &lines, "温-- 湿--");
+        }
+    }
+
+    if (items & UI_SCREEN_SWITCHES) {
+        int slots = UI_BODY_LINES - fixed_line_count(items);
+        if (slots > 5) {
+            slots = 5;
+        }
+        int total = 0;
+        for (int i = 0; i < device_count(); i++) {
+            const device_t *d = device_at(i);
+            if (d != NULL && d->kind == DEV_OUT) {
+                total++;
+            }
+        }
+        int shown = 0;
+        for (int i = 0; i < device_count() && shown < slots; i++) {
+            const device_t *d = device_at(i);
+            if (d == NULL || d->kind != DEV_OUT) {
+                continue;
+            }
+            char name[20];
+            utf8_copy(name, sizeof(name), d->name, 18);
+            body_append(out, n, &used, &lines, "%s %s", name, d->on ? "开" : "关");
+            shown++;
+        }
+        if (total > shown && slots > 0) {
+            body_append(out, n, &used, &lines, "… +%d", total - shown);
+        }
+    }
+
+    if (items & UI_SCREEN_IP) {
+        body_append(out, n, &used, &lines, "IP %s",
+                    st->active_ip[0] ? st->active_ip : "-");
+    }
+
+    if (items & UI_SCREEN_DATETIME) {
+        time_t now = time(NULL);
+        struct tm tm;
+        if (now > 1700000000 && localtime_r(&now, &tm) != NULL) {
+            body_append(out, n, &used, &lines, "%04d-%02d-%02d %02d:%02d",
+                        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                        tm.tm_hour, tm.tm_min);
+        } else {
+            body_append(out, n, &used, &lines, "时间 --:--");
+        }
+    }
+
+    if (items & UI_SCREEN_UPLINK) {
+        body_append(out, n, &used, &lines, "上行 %s",
+                    net_manager_backend_name(st->active));
+    }
+
+    if (items & UI_SCREEN_LINK) {
+        body_append(out, n, &used, &lines, "ETH %s WiFi %s",
+                    st->eth_ready ? "OK" : "--",
+                    st->wifi_ready ? "OK" : "--");
+    }
+
+    if (items & UI_SCREEN_UPTIME) {
+        uint64_t sec = (esp_timer_get_time() - s_boot_us) / 1000000ULL;
+        body_append(out, n, &used, &lines, "运行 %02llu:%02llu:%02llu",
+                    sec / 3600, (sec % 3600) / 60, sec % 60);
     }
 }
 
-/**
- * @brief 刷新看板内容
- * @param st          网络状态快照（用后即拷贝，不长期持有外部指针）
- * @param uptime_only true 时只刷运行时长（供纯定时刷新用）
- */
+/** 刷新看板内容（必须在持 LVGL 锁的情况下调用） */
 static void ui_refresh(const net_manager_status_t *st, bool uptime_only)
 {
-    char buf[40];
-
-    if (!uptime_only) {
-        net_manager_status_t st_local = *st;   /* 拷贝快照，避免持有外部对象 */
-
-        ui_set_uplink(&st_local);
-
-        snprintf(buf, sizeof(buf), "IP    %s",
-                 st_local.active_ip[0] ? st_local.active_ip : "-");
-        lv_label_set_text(s_lbl_ip, buf);
-
-        if (st_local.eth_ready) {
-            lv_label_set_text(s_lbl_eth, "Eth   OK");
-            lv_obj_set_style_text_color(s_lbl_eth, lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
-        } else {
-            lv_label_set_text(s_lbl_eth, "Eth   OFF");
-            lv_obj_set_style_text_color(s_lbl_eth, lv_palette_main(LV_PALETTE_RED), LV_PART_MAIN);
-        }
-
-        if (st_local.wifi_ready) {
-            lv_label_set_text(s_lbl_wifi, "WiFi  OK");
-            lv_obj_set_style_text_color(s_lbl_wifi, lv_palette_main(LV_PALETTE_GREEN), LV_PART_MAIN);
-        } else {
-            lv_label_set_text(s_lbl_wifi, "WiFi  --");
-            lv_obj_set_style_text_color(s_lbl_wifi, lv_palette_main(LV_PALETTE_RED), LV_PART_MAIN);
-        }
-    }
-
-    /* 运行时长 */
-    uint64_t sec = (esp_timer_get_time() - s_boot_us) / 1000000ULL;
-    snprintf(buf, sizeof(buf), "Up    %02llu:%02llu:%02llu",
-             sec / 3600, (sec % 3600) / 60, sec % 60);
-    lv_label_set_text(s_lbl_uptime, buf);
+    (void)uptime_only;
+    char body[512];
+    compose_body(body, sizeof(body), st);
+    lv_label_set_text(s_lbl_body, body);
 }
 
 /* ---------------------------------------------------------------------------
@@ -166,12 +271,8 @@ static void ui_show_notify(const ha_notify_t *n)
     lv_label_set_text(s_notify_title, n->title[0] ? n->title : "HA NOTIFY");
     lv_label_set_text(s_notify_msg, n->message[0] ? n->message : "-");
 
-    /* 隐藏常规 KPI 行，显示 banner */
-    lv_obj_add_flag(s_lbl_uplink, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_lbl_ip,     LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_lbl_eth,    LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_lbl_wifi,   LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_lbl_sensor, LV_OBJ_FLAG_HIDDEN);
+    /* 隐藏常规内容，显示 banner */
+    lv_obj_add_flag(s_lbl_body, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
 
     s_notify_active   = true;
@@ -184,40 +285,18 @@ static void ui_show_notify(const ha_notify_t *n)
 static void ui_hide_notify(void)
 {
     lv_obj_add_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_lbl_uplink, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_lbl_ip,     LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_lbl_eth,    LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_lbl_wifi,   LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_lbl_sensor, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(s_lbl_body, LV_OBJ_FLAG_HIDDEN);
     s_notify_active = false;
 }
 
 /* ---------------------------------------------------------------------------
- * 数据源 3：MQTT 传感器温湿度（由 ha_mqtt 投递任务调用，非 MQTT 回调）
+ * 数据源 3：MQTT 传感器温湿度（作为自定义传感器缺失时的兜底）
  * ------------------------------------------------------------------------- */
-static void ui_update_sensor_label(bool stale)
-{
-    char buf[40];
-    if (!s_sensor_has || stale) {
-        snprintf(buf, sizeof(buf), "温--℃ 湿--%%");
-    } else {
-        /* 紧凑格式（无空格）：CJK 字体下约 109px，宽度 116px 内不溢出 */
-        snprintf(buf, sizeof(buf), "温%.1f℃ 湿%.1f%%", s_sensor.temp, s_sensor.hum);
-    }
-    lv_label_set_text(s_lbl_sensor, buf);
-}
-
 static void ui_sensor_handler(const ha_sensor_t *sn, void *user_ctx)
 {
     (void)user_ctx;
     s_sensor = *sn;
     s_sensor_has = true;
-    s_sensor_stale = false;
-    if (!lvgl_port_lock(UI_LVGL_LOCK_TIMEOUT_MS)) {
-        return;   /* 下一轮周期任务兜底 */
-    }
-    ui_update_sensor_label(false);
-    lvgl_port_unlock();
 }
 
 /* 板内告警：直接弹通知横幅（内部自取 LVGL 锁，可在任意任务调用） */
@@ -262,17 +341,7 @@ static void ui_refresh_task(void *arg)
         }
         ui_refresh(&st, false);
 
-        /* 传感器超时 → 从“数值”切回“--”（状态变化时才重绘） */
-        bool now_stale = s_sensor_has &&
-            (esp_timer_get_time() - s_sensor.rx_us) >
-                (int64_t)CONFIG_HA_MQTT_SENSOR_STALE_MS * 1000;
-        if (now_stale != s_sensor_stale) {
-            s_sensor_stale = now_stale;
-            ui_update_sensor_label(now_stale);
-            ESP_LOGI(TAG, "传感器数据 %s", now_stale ? "超时（显示 --）" : "已恢复");
-        }
-
-        /* 通知显示窗口到期 → 恢复常规 KPI 显示 */
+        /* 通知显示窗口到期 → 恢复常规内容 */
         if (s_notify_active && esp_timer_get_time() >= s_notify_until_us) {
             ui_hide_notify();
             ESP_LOGI(TAG, "通知显示到期，恢复常规状态");
@@ -307,50 +376,13 @@ static void ui_create_widgets(void)
     const int Y1 = 26;             /* 第一行 y */
     const int DY = 18;             /* 行距 */
 
-    s_lbl_uplink = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_uplink, &lv_font_montserrat_12, LV_PART_MAIN);
-    lv_obj_set_width(s_lbl_uplink, W);
-    lv_label_set_long_mode(s_lbl_uplink, LV_LABEL_LONG_WRAP);
-    lv_obj_set_pos(s_lbl_uplink, X, Y1);
-    lv_label_set_text(s_lbl_uplink, "Uplink: -");
-
-    s_lbl_ip = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_ip, &lv_font_montserrat_12, LV_PART_MAIN);
-    lv_obj_set_style_text_color(s_lbl_ip, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_width(s_lbl_ip, W);
-    lv_label_set_long_mode(s_lbl_ip, LV_LABEL_LONG_WRAP);
-    lv_obj_set_pos(s_lbl_ip, X, Y1 + DY);
-    lv_label_set_text(s_lbl_ip, "IP    -");
-
-    s_lbl_eth = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_eth, &lv_font_montserrat_12, LV_PART_MAIN);
-    lv_obj_set_width(s_lbl_eth, W);
-    lv_label_set_long_mode(s_lbl_eth, LV_LABEL_LONG_WRAP);
-    lv_obj_set_pos(s_lbl_eth, X, Y1 + 2 * DY);
-    lv_label_set_text(s_lbl_eth, "Eth   OFF");
-
-    s_lbl_wifi = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_wifi, &lv_font_montserrat_12, LV_PART_MAIN);
-    lv_obj_set_width(s_lbl_wifi, W);
-    lv_label_set_long_mode(s_lbl_wifi, LV_LABEL_LONG_WRAP);
-    lv_obj_set_pos(s_lbl_wifi, X, Y1 + 3 * DY);
-    lv_label_set_text(s_lbl_wifi, "WiFi  --");
-
-    /* 传感器温湿度行（自建 CJK 字体；超时未更新则显示 --） */
-    s_lbl_sensor = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_sensor, &lv_font_cjk_14, LV_PART_MAIN);
-    lv_obj_set_style_text_color(s_lbl_sensor, lv_color_hex(0x69F0AE), LV_PART_MAIN);
-    lv_obj_set_width(s_lbl_sensor, W);
-    lv_label_set_long_mode(s_lbl_sensor, LV_LABEL_LONG_WRAP);   /* 极端情况下换行，绝不横向溢出 */
-    lv_obj_set_pos(s_lbl_sensor, X, Y1 + 4 * DY);
-    lv_label_set_text(s_lbl_sensor, "温--℃ 湿--%");
-
-    /* 底部运行时长（浅灰） */
-    s_lbl_uptime = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_uptime, &lv_font_montserrat_12, LV_PART_MAIN);
-    lv_obj_set_style_text_color(s_lbl_uptime, lv_color_hex(0x9E9E9E), LV_PART_MAIN);
-    lv_obj_align(s_lbl_uptime, LV_ALIGN_BOTTOM_LEFT, X, -4);
-    lv_label_set_text(s_lbl_uptime, "Up    00:00:00");
+    s_lbl_body = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_body, &lv_font_cjk_14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(s_lbl_body, lv_color_hex(0xE0E0E0), LV_PART_MAIN);
+    lv_obj_set_width(s_lbl_body, 116);
+    lv_label_set_long_mode(s_lbl_body, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(s_lbl_body, 6, 24);
+    lv_label_set_text(s_lbl_body, "加载中…");
 
     /* ---- HA 通知 banner（默认隐藏，覆盖 KPI 区 y=24..134，不碰标题/运行时长） ---- */
     s_notify_panel = lv_obj_create(scr);
@@ -421,9 +453,48 @@ uint8_t *ui_dashboard_copy_framebuffer(int *w, int *h, int *stride)
     return out;
 }
 
+uint32_t ui_dashboard_get_items(void)
+{
+    return s_items;
+}
+
+esp_err_t ui_dashboard_set_items(uint32_t mask)
+{
+    s_items = mask & UI_SCREEN_ALL;
+    nvs_handle_t h;
+    if (nvs_open(UI_ITEMS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u32(h, "mask", s_items);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    return ESP_OK;
+}
+
+esp_err_t ui_dashboard_get_text(char *buf, size_t size)
+{
+    if (buf == NULL || size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    net_manager_status_t st = net_manager_get_status();
+    compose_body(buf, size, &st);
+    return ESP_OK;
+}
+
+static void ui_load_items(void)
+{
+    nvs_handle_t h;
+    uint32_t mask = s_items;
+    if (nvs_open(UI_ITEMS_NS, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u32(h, "mask", &mask);
+        nvs_close(h);
+    }
+    s_items = mask & UI_SCREEN_ALL;
+}
+
 esp_err_t ui_dashboard_init(void)
 {
     s_boot_us = esp_timer_get_time();
+    ui_load_items();
 
     /* 1) ST7735S 面板：SPI3 独立总线；RST 恒 -1（与 W5500 共用，不重复复位）。
           必须在 net_eth_init() 之后调用 —— app_main 顺序已保证） */

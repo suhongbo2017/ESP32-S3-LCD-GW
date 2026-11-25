@@ -104,6 +104,8 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
   .reslist{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:8px}
   .rescard{background:var(--deep);border:1px solid var(--line);border-radius:3px;padding:8px 10px;font-size:12px;color:var(--mut);overflow-wrap:anywhere}
   .rescard b{display:block;color:var(--fg);font-size:13px;margin-bottom:2px}
+  .chk{display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;white-space:nowrap}
+  input[type="checkbox"]{width:16px;height:16px;padding:0;accent-color:var(--teal)}
 
   @media (max-width:700px){
     .card{grid-column:1/-1}.top{align-items:flex-start;flex-wrap:wrap}.top .grow{display:none}
@@ -174,6 +176,23 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
           <button class="sec" onclick="reboot(false)">仅重启</button>
         </div>
         <div class="msg">保存写入 NVS，重启后生效</div>
+      </div>
+    </section>
+
+    <section class="card pane full c-teal">
+      <h2>屏幕显示 <span class="msg" id="smsg"></span></h2>
+      <div class="bd">
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="scr_temp"> 温湿度</label>
+          <label class="chk"><input type="checkbox" id="scr_switch"> 开关状态</label>
+          <label class="chk"><input type="checkbox" id="scr_ip"> IP</label>
+          <label class="chk"><input type="checkbox" id="scr_time"> 日期时间</label>
+          <label class="chk"><input type="checkbox" id="scr_uplink"> 上行链路</label>
+          <label class="chk"><input type="checkbox" id="scr_link"> ETH/WiFi</label>
+          <label class="chk"><input type="checkbox" id="scr_uptime"> 运行时长</label>
+        </div>
+        <div class="row"><button class="pri" onclick="screenSave()">保存屏幕设置</button></div>
+        <div class="msg">修改后 1 秒内生效；最多 8 行，开关较多时自动截断</div>
       </div>
     </section>
 
@@ -490,6 +509,33 @@ async function defineGpio(){
   }catch(e){ $('dmsg').textContent = '失败: ' + e; }
 }
 
+const SCREEN_BITS = {
+  scr_temp: 1 << 0, scr_switch: 1 << 1, scr_ip: 1 << 2, scr_time: 1 << 3,
+  scr_uplink: 1 << 4, scr_uptime: 1 << 5, scr_link: 1 << 6
+};
+async function screenLoad(){
+  try{
+    const j = await (await api('/api/screen')).json();
+    for (const [id, bit] of Object.entries(SCREEN_BITS)) {
+      $(id).checked = !!(j.mask & bit);
+    }
+  }catch(e){}
+}
+async function screenSave(){
+  let mask = 0;
+  for (const [id, bit] of Object.entries(SCREEN_BITS)) {
+    if ($(id).checked) mask |= bit;
+  }
+  try{
+    const j = await (await api('/api/screen', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mask: mask})
+    })).json();
+    $('smsg').textContent = j.ok ? '已保存' : ('失败: ' + (j.error || ''));
+  }catch(e){ $('smsg').textContent = '失败: ' + e; }
+}
+
 async function saveBus(){
   const sda = Number($('b_sda').value);
   const scl = Number($('b_scl').value);
@@ -676,7 +722,7 @@ async function ota(){
   }catch(e){ $('omsg').textContent = '连接中断（设备可能已升级并重启）'; }
 }
 
-refresh(); loadLogs(); cfgLoad(); drawChart(); loadGpio();
+refresh(); loadLogs(); cfgLoad(); drawChart(); loadGpio(); screenLoad();
 showPage(localStorage.getItem('gateway-page') || 'info');
 setInterval(refresh, 2000);
 setInterval(drawChart, 30000);

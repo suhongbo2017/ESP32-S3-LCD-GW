@@ -42,6 +42,7 @@
 #include "app_cfg.h"
 #include "sensor_history.h"
 #include "device_registry.h"
+#include "ui_dashboard.h"
 
 #if CONFIG_WEB_CONSOLE_MDNS_ENABLE
 #include "mdns.h"
@@ -396,6 +397,55 @@ static esp_err_t h_gpio_bus(httpd_req_t *req)
     cJSON_AddNumberToObject(bus, "sda", sda_no);
     cJSON_AddNumberToObject(bus, "scl", scl_no);
     cJSON_AddBoolToObject(bus, "ready", true);
+    return send_json(req, o);
+}
+
+/** GET /api/screen —— 屏幕显示项掩码 */
+static esp_err_t h_screen_get(httpd_req_t *req)
+{
+    ha_mqtt_set_http_stage("screen_get");
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "mask", (double)ui_dashboard_get_items());
+    return send_json(req, o);
+}
+
+/** GET /api/screen/text —— 当前屏幕文本（诊断/预览） */
+static esp_err_t h_screen_text(httpd_req_t *req)
+{
+    ha_mqtt_set_http_stage("screen_text");
+    char text[512];
+    ui_dashboard_get_text(text, sizeof(text));
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddStringToObject(o, "text", text);
+    return send_json(req, o);
+}
+
+/** POST /api/screen —— 设置屏幕显示项（JSON: {"mask":N}） */
+static esp_err_t h_screen_post(httpd_req_t *req)
+{
+    ha_mqtt_set_http_stage("screen_post");
+    char body[128];
+    if (recv_body(req, body, sizeof(body)) < 0) {
+        return send_err_json(req, "bad_body", "请求体为空或过大");
+    }
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL) {
+        return send_err_json(req, "bad_json", "JSON 解析失败");
+    }
+    cJSON *mask = cJSON_GetObjectItem(root, "mask");
+    if (!cJSON_IsNumber(mask)) {
+        cJSON_Delete(root);
+        return send_err_json(req, "bad_args", "需要 mask");
+    }
+    uint32_t v = (uint32_t)mask->valueint;
+    cJSON_Delete(root);
+    ui_dashboard_set_items(v);
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "mask", (double)ui_dashboard_get_items());
     return send_json(req, o);
 }
 
@@ -812,7 +862,7 @@ esp_err_t web_console_init(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = CONFIG_WEB_CONSOLE_PORT;
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 24;
     cfg.stack_size       = 12288;
     cfg.lru_purge_enable = true;
     cfg.uri_match_fn     = httpd_uri_match_wildcard;   /* 支持通配符路径（日志下载） */
@@ -828,6 +878,9 @@ esp_err_t web_console_init(void)
         { .uri = "/api/gpio/bus",    .method = HTTP_POST, .handler = h_gpio_bus },
         { .uri = "/api/gpio/scan",   .method = HTTP_POST, .handler = h_gpio_scan },
         { .uri = "/api/gpio/dht_test", .method = HTTP_POST, .handler = h_gpio_dht_test },
+        { .uri = "/api/screen",      .method = HTTP_GET,  .handler = h_screen_get },
+        { .uri = "/api/screen/text", .method = HTTP_GET,  .handler = h_screen_text },
+        { .uri = "/api/screen",      .method = HTTP_POST, .handler = h_screen_post },
         { .uri = "/api/device",      .method = HTTP_POST, .handler = h_device_set },
         { .uri = "/api/logs",        .method = HTTP_GET,  .handler = h_logs_list },
         { .uri = "/api/logs/*",      .method = HTTP_GET,  .handler = h_logs_get },
