@@ -150,6 +150,9 @@ curl --noproxy "*" -i "http://<网关IP>/api/logs"
 curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
   -d "{\"pin\":4,\"name\":\"箱内灯\",\"desc\":\"继电器 IN\"}" ^
   "http://<网关IP>/api/gpio/define"
+curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
+  -d "{\"id\":\"gpio4\"}" ^
+  "http://<网关IP>/api/gpio/remove"
 curl --noproxy "*" -X POST "http://<网关IP>/api/device?id=gpio4&value=1"
 ```
 

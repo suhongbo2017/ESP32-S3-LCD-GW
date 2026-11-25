@@ -7,6 +7,7 @@
  *   GET  /api/status            状态 JSON
  *   GET  /api/gpio              已定义设备 / 可定义引脚 / 板载占用引脚
  *   POST /api/gpio/define       定义命名输出（JSON: pin/name/desc）
+ *   POST /api/gpio/remove       删除命名输出（JSON: id）
  *   POST /api/device?id=&value=0|1 设置命名设备开关
  *   GET  /api/logs              列出 TF 日志
  *   GET  /api/logs/<file>       下载 TF 日志（防目录穿越）
@@ -182,24 +183,33 @@ static esp_err_t h_gpio_info(httpd_req_t *req)
     return send_json(req, o);
 }
 
+/** 读取完整请求体到 buf（含结尾 NUL）；失败返回 -1 */
+static int recv_body(httpd_req_t *req, char *buf, size_t cap)
+{
+    int total = req->content_len;
+    if (total <= 0 || total >= (int)cap) {
+        return -1;
+    }
+    int got = 0;
+    while (got < total) {
+        int n = httpd_req_recv(req, buf + got, total - got);
+        if (n <= 0) {
+            return -1;
+        }
+        got += n;
+    }
+    buf[got] = '\0';
+    return got;
+}
+
 /** POST /api/gpio/define —— 定义一个命名输出（JSON: {"pin","name","desc"}） */
 static esp_err_t h_gpio_define(httpd_req_t *req)
 {
     ha_mqtt_set_http_stage("define");
     char body[512];
-    int total = req->content_len;
-    if (total <= 0 || total >= (int)sizeof(body)) {
+    if (recv_body(req, body, sizeof(body)) < 0) {
         return send_err_json(req, "bad_body", "请求体为空或过大");
     }
-    int got = 0;
-    while (got < total) {
-        int n = httpd_req_recv(req, body + got, total - got);
-        if (n <= 0) {
-            return send_err_json(req, "bad_body", "读取请求体失败");
-        }
-        got += n;
-    }
-    body[got] = '\0';
 
     cJSON *root = cJSON_Parse(body);
     if (root == NULL) {
@@ -251,6 +261,46 @@ static esp_err_t h_gpio_define(httpd_req_t *req)
         cJSON_AddNumberToObject(o, "pin", d->pin);
         cJSON_AddBoolToObject(o, "on", d->on);
     }
+    return send_json(req, o);
+}
+
+/** POST /api/gpio/remove —— 删除一个已定义输出（JSON: {"id"}） */
+static esp_err_t h_gpio_remove(httpd_req_t *req)
+{
+    ha_mqtt_set_http_stage("remove");
+    char body[128];
+    if (recv_body(req, body, sizeof(body)) < 0) {
+        return send_err_json(req, "bad_body", "请求体为空或过大");
+    }
+
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL) {
+        return send_err_json(req, "bad_json", "JSON 解析失败");
+    }
+    cJSON *id = cJSON_GetObjectItem(root, "id");
+    if (!cJSON_IsString(id) || id->valuestring[0] == '\0' ||
+        strlen(id->valuestring) >= sizeof(((device_t *)0)->id)) {
+        cJSON_Delete(root);
+        return send_err_json(req, "bad_id", "缺少或非法的 id");
+    }
+    char idbuf[16];
+    snprintf(idbuf, sizeof(idbuf), "%s", id->valuestring);
+    cJSON_Delete(root);
+
+    esp_err_t err = device_remove(idbuf);
+    if (err == ESP_ERR_NOT_FOUND) {
+        return send_err_json(req, "unknown_device", "设备未定义");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_err_json(req, "not_ready", "设备未初始化");
+    }
+    if (err != ESP_OK) {
+        return send_err_json(req, "remove_failed", esp_err_to_name(err));
+    }
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddStringToObject(o, "id", idbuf);
     return send_json(req, o);
 }
 
@@ -570,6 +620,7 @@ esp_err_t web_console_init(void)
         { .uri = "/api/status",      .method = HTTP_GET,  .handler = h_status },
         { .uri = "/api/gpio",        .method = HTTP_GET,  .handler = h_gpio_info },
         { .uri = "/api/gpio/define", .method = HTTP_POST, .handler = h_gpio_define },
+        { .uri = "/api/gpio/remove", .method = HTTP_POST, .handler = h_gpio_remove },
         { .uri = "/api/device",      .method = HTTP_POST, .handler = h_device_set },
         { .uri = "/api/logs",        .method = HTTP_GET,  .handler = h_logs_list },
         { .uri = "/api/logs/*",      .method = HTTP_GET,  .handler = h_logs_get },

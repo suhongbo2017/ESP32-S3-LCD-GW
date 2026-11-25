@@ -48,7 +48,8 @@ static const char *TAG = "ha_mqtt";
 
 /* 设备事件：状态变化或新定义（让 MQTT 发布脱离 HTTP/回调任务上下文） */
 typedef struct {
-    bool     define;   /*!< true=新定义（发 Discovery/订阅）；false=状态变化 */
+    bool     define;   /*!< true=新定义（发 Discovery/订阅） */
+    bool     remove;   /*!< true=删除（清 Discovery/状态） */
     bool     on;
     device_t dev;
 } ha_dev_evt_t;
@@ -311,17 +312,48 @@ static void on_device_defined(const device_t *d)
     }
 }
 
+/** 设备被删除：投递给发布任务清除 HA 实体（连接断开时保留事件，重连后处理） */
+static void on_device_removed(const char *id)
+{
+    if (id == NULL || s_dev_q == NULL) {
+        return;
+    }
+    ha_dev_evt_t ev = { 0 };
+    ev.remove = true;
+    snprintf(ev.dev.id, sizeof(ev.dev.id), "%s", id);
+    if (xQueueSend(s_dev_q, &ev, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "设备事件队列已满，丢弃删除 %s", id);
+    }
+}
+
 /** 设备事件发布任务：唯一在 HTTP/回调任务之外访问 MQTT 的路径之一 */
 static void dev_pub_task(void *arg)
 {
     (void)arg;
     ha_dev_evt_t ev;
     for (;;) {
-        if (xQueueReceive(s_dev_q, &ev, portMAX_DELAY) != pdTRUE) {
+        if (xQueuePeek(s_dev_q, &ev, portMAX_DELAY) != pdTRUE) {
             continue;
         }
         if (s_client == NULL || !s_connected) {
-            continue;      /* 重连后会统一重发 Discovery 与状态 */
+            vTaskDelay(pdMS_TO_TICKS(500));   /* 保留事件，重连后统一处理 */
+            continue;
+        }
+        xQueueReceive(s_dev_q, &ev, 0);
+
+        if (ev.remove) {
+            char topic[HA_DEV_TOPIC_MAX];
+            char obj_id[48];
+            /* 清空 retained 状态与 Discovery，让 HA 删除实体 */
+            dev_topic(topic, sizeof(topic), ev.dev.id, "state");
+            esp_mqtt_client_publish(s_client, topic, NULL, 0, 0, 1);
+            snprintf(obj_id, sizeof(obj_id), "esp32gw_dev_%s", ev.dev.id);
+            snprintf(topic, sizeof(topic), "homeassistant/switch/%s/config", obj_id);
+            esp_mqtt_client_publish(s_client, topic, NULL, 0, 0, 1);
+            dev_topic(topic, sizeof(topic), ev.dev.id, "set");
+            esp_mqtt_client_unsubscribe(s_client, topic);
+            ESP_LOGI(TAG, "已清除设备实体：%s", ev.dev.id);
+            continue;
         }
         if (ev.define) {
 #if defined(CONFIG_HA_MQTT_DISCOVERY_ENABLE)
@@ -590,6 +622,8 @@ esp_err_t ha_mqtt_init(void)
     device_registry_set_change_listener(on_device_changed);
     /* 2.2) 运行时新定义设备 -> 立即发布 Discovery / 订阅 / 状态 */
     device_registry_set_define_listener(on_device_defined);
+    /* 2.3) 删除设备 -> 清除 HA Discovery/状态并退订 */
+    device_registry_set_remove_listener(on_device_removed);
 
     /* 3) 心跳任务（周期发布 state） */
     xTaskCreate(heartbeat_task, "ha_hb", HA_HEARTBEAT_STACK, NULL,

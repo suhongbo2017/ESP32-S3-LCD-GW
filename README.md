@@ -630,8 +630,8 @@ CONFIG_LCD_ST7735_SPI_CLK_HZ = 40000000；RES = 128x160；TEST_PATTERN = n
 | mDNS 组件 | **`espressif/mdns`（组件仓库）** | ⚠️ IDF v5.x 已把 mdns 移出内核，必须用 `idf_component.yml` 声明 |
 | 鉴权 | **无 Token**（已移除） | 页面与所有 `/api/*` 可直接访问；仅限可信局域网，禁止暴露公网 |
 | GPIO 白名单 | **GPIO1–9 / 39–42 / 47–48** | 板载占用（0/10–21/26–38/43–46）在 GPIO 页作为说明窗展示，不可定义 |
-| 命名设备 | 运行时在 **GPIO 定义**页手动定义 | 填写设备名、说明、选择空闲引脚；保存到 NVS，上电默认关，Web 与 HA switch 共用 |
-| 接口 | `/api/status` `/api/gpio` `/api/gpio/define` `/api/device` `/api/history` `/api/logs` `/api/config` `/api/reboot` `/api/ota` | `POST /api/gpio/define`（JSON pin/name/desc）、`POST /api/device?id=<id>&value=0|1` |
+| 命名设备 | 运行时在 **GPIO 定义**页手动定义/删除 | 填写设备名、说明、选择空闲引脚；保存 NVS，上电默认关；删除需确认并同时清除 HA 实体 |
+| 接口 | `/api/status` `/api/gpio` `/api/gpio/define` `/api/gpio/remove` `/api/device` `/api/history` `/api/logs` `/api/config` `/api/reboot` `/api/ota` | `POST /api/gpio/define`（JSON pin/name/desc）、`POST /api/gpio/remove`（JSON id）、`POST /api/device?id=<id>&value=0|1` |
 | 温湿度曲线 | **SVG 双轴**（温度左轴/湿度右轴），240 条 ≈ 1 小时，纯前端无库 | 已取代屏幕截图功能 |
 | ~~屏幕截图~~ | **已移除** | 与 `/api/status` 数据重复，日常无价值 |
 

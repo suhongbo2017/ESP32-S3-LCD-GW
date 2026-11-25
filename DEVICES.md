@@ -110,7 +110,7 @@ MQTT 主题前缀沿用现有约定：`ha/esp32gw/dev/<id>/{set,state}`。
 
 1. **web_console**（`DEV_OUT` 当前实现）
    - `GET /api/gpio` → `{defined:[{id,name,pin,desc,on}], available:[pin], reserved:[{pin,reason}]}`
-   - `POST /api/gpio/define`（JSON `pin/name/desc`）、`POST /api/device?id=x&value=v`
+   - `POST /api/gpio/define`（JSON `pin/name/desc`）、`POST /api/gpio/remove`（JSON `id`）、`POST /api/device?id=x&value=v`
    - 首页「GPIO 定义」页：下拉选择空闲引脚定义；已定义与板载占用引脚以说明窗展示
    - 后续类型沿用：按 `kind` 自动渲染控件（开关/滑块/数值），周期刷新
 2. **ha_mqtt**：连接成功后按设备列表批量发 Discovery；收到 `.../set` 调 `device_set()`；变化/连接时发 `.../state`

@@ -201,7 +201,7 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
           <select id="d_pin"><option value="">加载中…</option></select>
           <button class="pri" onclick="defineGpio()">定义</button>
         </div>
-        <div class="msg">引脚定义后不可修改；已使用的引脚会从下拉列表移除</div>
+        <div class="msg">定义后引脚从下拉列表移除；如需更换，点已定义设备上的「删除」后重新定义（删除会关闭输出）</div>
       </div>
     </section>
 
@@ -221,7 +221,7 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
   </main>
 
   <div class="sub" style="margin-top:6px">
-    接口：<code>/api/status</code> <code>/api/gpio</code> <code>/api/gpio/define</code> <code>/api/device</code> <code>/api/logs</code> <code>/api/history</code>
+    接口：<code>/api/status</code> <code>/api/gpio</code> <code>/api/gpio/define</code> <code>/api/gpio/remove</code> <code>/api/device</code> <code>/api/logs</code> <code>/api/history</code>
   </div>
 </div>
 
@@ -306,9 +306,11 @@ async function downloadLog(name){
 }
 
 /* ---- GPIO 定义 / 已定义设备 ---- */
+let gpioData = {defined: [], available: [], reserved: []};
 async function loadGpio(){
   try{
     const j = await (await api('/api/gpio')).json();
+    gpioData = j;
 
     const sel = $('d_pin');
     const cur = sel.value;
@@ -328,6 +330,7 @@ async function loadGpio(){
           <div class="st">
             <span class="msg">当前 <b class="${d.on ? 'ok' : 'bad'}">${d.on ? '开' : '关'}</b></span>
             <button class="${d.on ? 'sec' : 'pri'}" onclick="deviceSet('${esc(d.id)}',${d.on ? 0 : 1})">${d.on ? '关闭' : '打开'}</button>
+            <button class="sec" onclick="removeGpio('${esc(d.id)}')">删除</button>
           </div>
         </div>`).join('')
       : '<div class="msg">尚未定义任何 IO。选择引脚、填写设备名后点“定义”。</div>';
@@ -370,6 +373,26 @@ async function deviceSet(id, v){
     $('gmsg').textContent = j.ok ? ((j.name || id) + (j.on ? ' 已打开' : ' 已关闭')) : ('失败: ' + (j.error || j.message || ''));
     loadGpio();
   }catch(e){ $('gmsg').textContent = '失败: ' + e; }
+}
+
+async function removeGpio(id){
+  const d = (gpioData.defined || []).find(x => x.id === id);
+  const label = d ? (d.name + '（GPIO' + d.pin + '）') : id;
+  if (!confirm('确定删除「' + label + '」？\n\n删除后该 GPIO 会关闭并回到可选列表，可从下拉框重新定义。')) return;
+  try{
+    const j = await (await api('/api/gpio/remove', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: id})
+    })).json();
+    if (j.ok){
+      $('gmsg').textContent = '已删除 ' + label;
+      $('dmsg').textContent = '';
+      loadGpio();
+    } else {
+      $('gmsg').textContent = '删除失败: ' + (j.message || j.error || '');
+    }
+  }catch(e){ $('gmsg').textContent = '删除失败: ' + e; }
 }
 
 /* ---- 温湿度曲线（纯 SVG 像素阶梯，无外部库） ---- */

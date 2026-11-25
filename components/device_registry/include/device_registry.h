@@ -49,6 +49,9 @@ typedef void (*device_change_cb_t)(const char *id, bool on);
 /** 新设备定义回调：在 HTTP 任务上下文调用，用于立即发布 HA Discovery */
 typedef void (*device_defined_cb_t)(const device_t *dev);
 
+/** 设备删除回调：在 HTTP 任务上下文调用，用于清除 HA 实体 */
+typedef void (*device_removed_cb_t)(const char *id);
+
 /** 初始化：从 NVS 恢复定义并配置输出（未定义的引脚保持原状） */
 esp_err_t device_registry_init(void);
 
@@ -60,6 +63,9 @@ esp_err_t device_registry_init(void);
  * @param desc 说明（可为 NULL/空）
  */
 esp_err_t device_define(const char *name, int pin, const char *desc);
+
+/** 删除一个已定义设备：关闭输出、移出注册表并从 NVS 清除 */
+esp_err_t device_remove(const char *id);
 
 int device_count(void);
 const device_t *device_at(int idx);
@@ -84,6 +90,9 @@ void device_registry_set_change_listener(device_change_cb_t cb);
 
 /** 注册新定义监听（传 NULL 取消）；用于 HA 立即发布 Discovery */
 void device_registry_set_define_listener(device_defined_cb_t cb);
+
+/** 注册删除监听（传 NULL 取消）；用于 HA 清除 Discovery/状态 */
+void device_registry_set_remove_listener(device_removed_cb_t cb);
 
 #ifdef __cplusplus
 }

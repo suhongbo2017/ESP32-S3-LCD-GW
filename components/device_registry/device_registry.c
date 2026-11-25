@@ -26,6 +26,7 @@ static int s_count = 0;
 static SemaphoreHandle_t s_lock = NULL;
 static device_change_cb_t s_change_cb = NULL;
 static device_defined_cb_t s_define_cb = NULL;
+static device_removed_cb_t s_remove_cb = NULL;
 
 /** 板载占用引脚（与 PINMAP.md §3 对齐；不在白名单内的已用引脚） */
 static const device_reserved_t s_reserved[] = {
@@ -285,6 +286,63 @@ esp_err_t device_define(const char *name, int pin, const char *desc)
     return ESP_OK;
 }
 
+esp_err_t device_remove(const char *id)
+{
+    if (id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int idx = -1;
+    for (int i = 0; i < s_count; i++) {
+        if (strcmp(s_devs[i].id, id) == 0) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) {
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    device_t removed = s_devs[idx];
+    for (int i = idx; i < s_count - 1; i++) {
+        s_devs[i] = s_devs[i + 1];
+    }
+    s_count--;
+    memset(&s_devs[s_count], 0, sizeof(device_t));
+    gpio_set_level(removed.pin, 0);     /* 删除即关闭输出 */
+
+    esp_err_t err = persist_all();
+    if (err != ESP_OK) {
+        s_devs[s_count++] = removed;    /* 回滚（顺序可能变化，但定义不丢） */
+    } else {
+        nvs_handle_t h;
+        if (nvs_open(DEV_NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+            char key[8];
+            snprintf(key, sizeof(key), "d%d", s_count);
+            nvs_erase_key(h, key);      /* 清掉已失效的最后一条旧记录 */
+            nvs_commit(h);
+            nvs_close(h);
+        }
+    }
+    device_removed_cb_t cb = s_remove_cb;
+    xSemaphoreGive(s_lock);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "删除 %s 后写入 NVS 失败：%s", id, esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "已删除设备 %s（GPIO%d）", removed.id, removed.pin);
+    if (cb != NULL) {
+        cb(removed.id);
+    }
+    return ESP_OK;
+}
+
 esp_err_t device_set(const char *id, bool on)
 {
     if (id == NULL) {
@@ -372,5 +430,16 @@ void device_registry_set_define_listener(device_defined_cb_t cb)
         xSemaphoreGive(s_lock);
     } else {
         s_define_cb = cb;
+    }
+}
+
+void device_registry_set_remove_listener(device_removed_cb_t cb)
+{
+    if (s_lock != NULL) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        s_remove_cb = cb;
+        xSemaphoreGive(s_lock);
+    } else {
+        s_remove_cb = cb;
     }
 }
