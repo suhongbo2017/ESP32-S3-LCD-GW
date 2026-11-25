@@ -10,8 +10,9 @@
 | [`README.md`](./README.md)（本文） | 架构、编译/烧录、里程碑、**§11 已确认参数（用户实测 OK）**、踩坑记录 |
 | [`PINMAP.md`](./PINMAP.md) | 原厂电路板引脚映射（W5500/LCD/TF/串口）+ 实测方向与颜色配置 |
 | [`SOLUTIONS.md`](./SOLUTIONS.md) | 方案选型（为何选方案 A） |
-| [`DEVICES.md`](./DEVICES.md) | **模块化 GPIO 设备设计**—DEV_OUT（命名开关）已实现；继电器/按钮/ADC/PWM 按此扩展 |
+| [`DEVICES.md`](./DEVICES.md) | **模块化设备设计**—开关、ADC、I2C 传感器、DHT22 已实现；PWM/输入类按此扩展 |
 | [`BUILD_FLOW.md`](./BUILD_FLOW.md) | **项目构建流水**：环境、配置、编译、烧录、OTA、验证、故障排查和大修改文档同步规则 |
+| [`HANDOVER.md`](./HANDOVER.md) | **交接文档**：当前功能/接线/API/MQTT/NVS、已验证项、已知问题、排障与下一步 |
 | `partitions.csv` | 分区表（双 OTA：`ota_0`/`ota_1` 各 3MB） |
 
 > 约定：**每次用户目视确认「OK」后，把该状态下实际正确的参数写入 §11**（含确认日期）。
