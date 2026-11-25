@@ -26,6 +26,7 @@ typedef enum {
     DEV_OUT = 0,        /*!< 开关量输出 → Web 开关 + HA switch */
     DEV_ADC = 1,        /*!< ADC 模拟量（声音包络等）→ HA sensor */
     DEV_I2C_SENSOR = 2, /*!< I2C 传感器 → HA sensor（可多指标） */
+    DEV_DHT = 3,        /*!< DHT22/AM2302 单总线温湿度 */
 } dev_kind_t;
 
 /** I2C 传感器型号 */
@@ -49,6 +50,8 @@ typedef struct {
     bool        valid[DEVICE_METRICS_MAX];
     float       value[DEVICE_METRICS_MAX];
     int64_t     value_us;              /*!< 最近一次成功采样时刻 */
+    int64_t     last_try_us;           /*!< 最近一次尝试采样时刻（节流用） */
+    uint16_t    interval_ms;           /*!< 采样周期 */
     void       *drv;                   /*!< 驱动私有句柄（勿直接使用） */
 } device_t;
 

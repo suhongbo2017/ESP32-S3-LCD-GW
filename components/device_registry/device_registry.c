@@ -140,8 +140,8 @@ const device_t *device_find(const char *id)
 const device_t *device_find_pin(int pin)
 {
     for (int i = 0; i < s_count; i++) {
-        if ((s_devs[i].kind == DEV_OUT || s_devs[i].kind == DEV_ADC) &&
-            s_devs[i].pin == pin) {
+        if ((s_devs[i].kind == DEV_OUT || s_devs[i].kind == DEV_ADC ||
+             s_devs[i].kind == DEV_DHT) && s_devs[i].pin == pin) {
             return &s_devs[i];
         }
     }
@@ -173,6 +173,9 @@ int device_metric_count(const device_t *d)
     if (d->kind == DEV_ADC) {
         return 1;
     }
+    if (d->kind == DEV_DHT) {
+        return 2;
+    }
     if (d->kind == DEV_I2C_SENSOR) {
         return (d->model == SENSOR_SHT31 || d->model == SENSOR_SHT4X) ? 2 : 1;
     }
@@ -187,7 +190,7 @@ const char *device_metric_key(const device_t *d, int idx)
     if (d->kind == DEV_ADC) {
         return "level";
     }
-    if (d->model == SENSOR_SHT31 || d->model == SENSOR_SHT4X) {
+    if (d->kind == DEV_DHT || d->model == SENSOR_SHT31 || d->model == SENSOR_SHT4X) {
         return idx == 0 ? "temp" : "hum";
     }
     return "lux";
@@ -201,7 +204,7 @@ const char *device_metric_label(const device_t *d, int idx)
     if (d->kind == DEV_ADC) {
         return "声音强度";
     }
-    if (d->model == SENSOR_SHT31 || d->model == SENSOR_SHT4X) {
+    if (d->kind == DEV_DHT || d->model == SENSOR_SHT31 || d->model == SENSOR_SHT4X) {
         return idx == 0 ? "温度" : "湿度";
     }
     return "照度";
@@ -215,7 +218,7 @@ const char *device_metric_unit(const device_t *d, int idx)
     if (d->kind == DEV_ADC) {
         return "mV";
     }
-    if (d->model == SENSOR_SHT31 || d->model == SENSOR_SHT4X) {
+    if (d->kind == DEV_DHT || d->model == SENSOR_SHT31 || d->model == SENSOR_SHT4X) {
         return idx == 0 ? "℃" : "%";
     }
     return "lx";
@@ -399,6 +402,70 @@ static bool adc_read(device_t *d)
 }
 
 /* ------------------------------------------------------------------ */
+/* DHT22 / AM2302 单总线                                               */
+/* ------------------------------------------------------------------ */
+
+/** 等待引脚到达指定电平（微秒级；仅在临界区内调用） */
+static bool dht_wait_level(int pin, int level, int timeout_us)
+{
+    for (int i = 0; i < timeout_us; i++) {
+        if (gpio_get_level(pin) == level) {
+            return true;
+        }
+        esp_rom_delay_us(1);
+    }
+    return false;
+}
+
+static void dht_attach(device_t *d)
+{
+    gpio_reset_pin(d->pin);
+    gpio_set_direction(d->pin, GPIO_MODE_INPUT_OUTPUT_OD);
+    gpio_set_pull_mode(d->pin, GPIO_PULLUP_ONLY);
+    gpio_set_level(d->pin, 1);      /* 释放总线 */
+    d->interval_ms = 2500;
+}
+
+static bool dht_read(device_t *d)
+{
+    const int pin = d->pin;
+    uint8_t data[5] = { 0 };
+
+    gpio_set_level(pin, 0);                 /* 起始信号：拉低 2ms */
+    vTaskDelay(pdMS_TO_TICKS(2));
+    gpio_set_level(pin, 1);
+
+    portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    bool ok = false;
+    taskENTER_CRITICAL(&mux);
+    if (dht_wait_level(pin, 0, 120) &&      /* 传感器应答低 80us */
+        dht_wait_level(pin, 1, 120) &&      /* 高 80us */
+        dht_wait_level(pin, 0, 120)) {      /* 第一位起始低 */
+        ok = true;
+        for (int i = 0; i < 40 && ok; i++) {
+            if (!dht_wait_level(pin, 1, 120)) { ok = false; break; }
+            esp_rom_delay_us(40);           /* 26-28us=0，70us=1 */
+            int v = gpio_get_level(pin);
+            data[i / 8] = (uint8_t)((data[i / 8] << 1) | (v ? 1 : 0));
+            if (!dht_wait_level(pin, 0, 120)) { ok = false; break; }
+        }
+    }
+    taskEXIT_CRITICAL(&mux);
+
+    if (!ok || (uint8_t)(data[0] + data[1] + data[2] + data[3]) != data[4]) {
+        d->valid[0] = d->valid[1] = false;
+        return false;
+    }
+    uint16_t hum = (uint16_t)((data[0] << 8) | data[1]);
+    uint16_t temp = (uint16_t)(((data[2] & 0x7F) << 8) | data[3]);
+    d->value[0] = temp / 10.0f * ((data[2] & 0x80) ? -1.0f : 1.0f);
+    d->value[1] = hum / 10.0f;
+    d->valid[0] = d->valid[1] = true;
+    d->value_us = esp_timer_get_time();
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
 /* I2C 采样                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -533,6 +600,8 @@ static void load_device(const char *json)
         snprintf(id, sizeof(id), "gpio%d", def.pin);
     } else if (def.kind == DEV_ADC) {
         snprintf(id, sizeof(id), "adc%d", def.pin);
+    } else if (def.kind == DEV_DHT) {
+        snprintf(id, sizeof(id), "dht%d", def.pin);
     } else {
         snprintf(id, sizeof(id), "i2c%02x", def.addr);
     }
@@ -548,8 +617,8 @@ static void load_device(const char *json)
         cJSON_Delete(o);
         return;
     }
-    if (def.kind == DEV_OUT && !device_pin_allowed(def.pin)) {
-        ESP_LOGW(TAG, "跳过 %s：输出引脚非法 %d", id, def.pin);
+    if ((def.kind == DEV_OUT || def.kind == DEV_DHT) && !device_pin_allowed(def.pin)) {
+        ESP_LOGW(TAG, "跳过 %s：数字引脚非法 %d", id, def.pin);
         cJSON_Delete(o);
         return;
     }
@@ -574,6 +643,9 @@ static void load_device(const char *json)
         gpio_reset_pin(d->pin);
         gpio_set_direction(d->pin, GPIO_MODE_INPUT_OUTPUT);
         gpio_set_level(d->pin, 0);
+        d->interval_ms = 0;
+    } else if (d->kind == DEV_DHT) {
+        dht_attach(d);
     } else if (d->kind == DEV_ADC) {
         adc_attach(d);
     } else if (d->kind == DEV_I2C_SENSOR && s_bus != NULL) {
@@ -628,7 +700,7 @@ esp_err_t device_registry_init(void)
     }
     xSemaphoreGive(s_lock);
 
-    xTaskCreate(s_poll_task_fn, "dev_poll", POLL_TASK_STACK, NULL, POLL_TASK_PRIO, &s_poll_task);
+    xTaskCreatePinnedToCore(s_poll_task_fn, "dev_poll", POLL_TASK_STACK, NULL, POLL_TASK_PRIO, &s_poll_task, 1);
 
     ESP_LOGI(TAG, "已加载 %d 台设备（I2C %s，ADC %s）",
              s_count, s_bus ? "就绪" : "不可用", s_adc ? "就绪" : "不可用");
@@ -656,7 +728,8 @@ esp_err_t device_define(const dev_def_t *def)
     if (s_lock == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (def->kind != DEV_OUT && def->kind != DEV_ADC && def->kind != DEV_I2C_SENSOR) {
+    if (def->kind != DEV_OUT && def->kind != DEV_ADC &&
+        def->kind != DEV_I2C_SENSOR && def->kind != DEV_DHT) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -686,12 +759,27 @@ esp_err_t device_define(const dev_def_t *def)
         gpio_reset_pin(def->pin);
         gpio_set_direction(def->pin, GPIO_MODE_INPUT_OUTPUT);
         gpio_set_level(def->pin, 0);
+        tmp.interval_ms = 0;
+    } else if (def->kind == DEV_DHT) {
+        if (!device_pin_allowed(def->pin) || pin_in_use(def->pin)) {
+            xSemaphoreGive(s_lock);
+            return ESP_ERR_INVALID_ARG;
+        }
+        snprintf(tmp.id, sizeof(tmp.id), "dht%d", def->pin);
+        dht_attach(&tmp);
+        if (!dht_read(&tmp)) {
+            gpio_set_level(def->pin, 1);
+            gpio_reset_pin(def->pin);
+            xSemaphoreGive(s_lock);
+            return ESP_ERR_NOT_FOUND;
+        }
     } else if (def->kind == DEV_ADC) {
         if (!device_adc_pin_allowed(def->pin) || pin_in_use(def->pin) || s_adc == NULL) {
             xSemaphoreGive(s_lock);
             return ESP_ERR_INVALID_ARG;
         }
         snprintf(tmp.id, sizeof(tmp.id), "adc%d", def->pin);
+        tmp.interval_ms = 1000;
         if (adc_attach(&tmp) != ESP_OK) {
             xSemaphoreGive(s_lock);
             return ESP_ERR_INVALID_STATE;
@@ -702,6 +790,7 @@ esp_err_t device_define(const dev_def_t *def)
             return ESP_ERR_INVALID_ARG;
         }
         tmp.addr = def->addr ? def->addr : default_addr(def->model);
+        tmp.interval_ms = 1000;
         snprintf(tmp.id, sizeof(tmp.id), "i2c%02x", tmp.addr);
         if (device_find(tmp.id) != NULL) {
             xSemaphoreGive(s_lock);
@@ -764,6 +853,9 @@ esp_err_t device_remove(const char *id)
     i2c_detach(&removed);
     if (removed.kind == DEV_OUT) {
         gpio_set_level(removed.pin, 0);
+    } else if (removed.kind == DEV_DHT) {
+        gpio_set_level(removed.pin, 1);
+        gpio_reset_pin(removed.pin);
     }
 
     for (int i = idx; i < s_count - 1; i++) {
@@ -949,11 +1041,19 @@ static void s_poll_task_fn(void *arg)
         vTaskDelay(pdMS_TO_TICKS(POLL_PERIOD_MS));
         int n = 0;
         xSemaphoreTake(s_lock, portMAX_DELAY);
+        int64_t now = esp_timer_get_time();
         for (int i = 0; i < s_count; i++) {
             device_t *d = &s_devs[i];
+            if (d->interval_ms > 0 &&
+                now - d->last_try_us < (int64_t)d->interval_ms * 1000) {
+                continue;
+            }
             bool ok = false;
+            d->last_try_us = now;
             if (d->kind == DEV_ADC) {
                 ok = adc_read(d);
+            } else if (d->kind == DEV_DHT) {
+                ok = dht_read(d);
             } else if (d->kind == DEV_I2C_SENSOR) {
                 ok = i2c_read(d);
             }

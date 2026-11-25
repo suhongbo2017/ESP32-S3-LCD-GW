@@ -196,8 +196,8 @@ static esp_err_t h_gpio_info(httpd_req_t *req)
     if (scl > 0 && scl < 64) used[scl] = true;
     for (int i = 0; i < device_count(); i++) {
         const device_t *d = device_at(i);
-        if (d != NULL && (d->kind == DEV_OUT || d->kind == DEV_ADC) &&
-            d->pin >= 0 && d->pin < 64) {
+        if (d != NULL && (d->kind == DEV_OUT || d->kind == DEV_ADC ||
+                          d->kind == DEV_DHT) && d->pin >= 0 && d->pin < 64) {
             used[d->pin] = true;
         }
     }
@@ -305,6 +305,8 @@ static esp_err_t h_gpio_define(httpd_req_t *req)
         def.kind = DEV_OUT;
     } else if (strcmp(kind_s, "adc") == 0) {
         def.kind = DEV_ADC;
+    } else if (strcmp(kind_s, "dht") == 0) {
+        def.kind = DEV_DHT;
     } else if (strcmp(kind_s, "i2c") == 0) {
         def.kind = DEV_I2C_SENSOR;
         if (strcmp(model_s, "sht31") == 0) {

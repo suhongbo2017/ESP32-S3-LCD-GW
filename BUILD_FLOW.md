@@ -156,6 +156,9 @@ curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
 curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
   -d "{\"kind\":\"adc\",\"pin\":5,\"name\":\"声音\",\"desc\":\"包络 mV\"}" ^
   "http://<网关IP>/api/gpio/define"
+curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
+  -d "{\"kind\":\"dht\",\"pin\":6,\"name\":\"箱内温湿度\",\"desc\":\"DHT22\"}" ^
+  "http://<网关IP>/api/gpio/define"
 curl --noproxy "*" -X POST "http://<网关IP>/api/gpio/scan"
 curl --noproxy "*" -X POST -H "Content-Type: application/json" ^
   -d "{\"id\":\"gpio4\"}" ^
@@ -193,6 +196,7 @@ HTTP 为明文传输，且控制接口包含命名 GPIO 输出、配置、重启
 - GPIO14 为 W5500 中断。
 - GPIO1–9、39–42、47–48 可做数字输出/输入；ADC 只能用 **GPIO1–9（ADC1）**。
 - I2C 默认 SDA=47/SCL=48（Web 可改）；SHT31/4x=0x44，BH1750=0x23；总线无设备时用 `POST /api/gpio/scan` 检查地址。
+- DHT22：DATA 接任意空闲数字脚（避开 I2C 总线脚），DATA 与 3V3 之间加 4.7k–10k 上拉；采样周期 2.5s。
 - W5500 使用 SPI2，LCD 使用 SPI3；不要把两者改到同一 SPI 总线而不重新核对 CS、INT、RST。
 - 8MB PSRAM 用于 LVGL 大缓冲；不要把整帧缓冲或大内存池移回内部 RAM。
 

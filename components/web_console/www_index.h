@@ -207,6 +207,7 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
             <option value="sht31">温湿度 · SHT31</option>
             <option value="sht4x">温湿度 · SHT4x</option>
             <option value="bh1750">光照 · BH1750</option>
+            <option value="dht22">温湿度 · DHT22</option>
             <option value="adc">声音 · 模拟量</option>
           </select>
           <span class="msg" id="d_type_hint"></span>
@@ -350,6 +351,7 @@ function hexAddr(a){ return '0x' + Number(a || 0).toString(16).padStart(2, '0').
 function devTypeLabel(d){
   if (d.kind === 0) return '开关输出 · GPIO' + d.pin;
   if (d.kind === 1) return '声音 · GPIO' + d.pin;
+  if (d.kind === 3) return 'DHT22 · GPIO' + d.pin;
   const models = {1: 'SHT31', 2: 'SHT4x', 3: 'BH1750'};
   return (models[d.model] || 'I2C') + ' · ' + hexAddr(d.addr);
 }
@@ -393,7 +395,7 @@ function updateDefineForm(){
     $('d_addr').value = kind === 'bh1750' ? '0x23' : '0x44';
     $('d_i2c_hint').textContent = kind === 'bh1750' ? 'BH1750 常见 0x23/0x5C' : 'SHT31/4x 常见 0x44/0x45';
   }
-  const hints = {out: '数字输出', sht31: 'I2C 温湿度', sht4x: 'I2C 温湿度', bh1750: 'I2C 光照', adc: 'ADC1（GPIO1–9）'};
+  const hints = {out: '数字输出', sht31: 'I2C 温湿度', sht4x: 'I2C 温湿度', bh1750: 'I2C 光照', dht22: '单总线，需 4.7k 上拉', adc: 'ADC1（GPIO1–9）'};
   $('d_type_hint').textContent = hints[kind] || '';
   fillPinOptions();
 }
@@ -463,7 +465,7 @@ async function defineGpio(){
       body.addr = addr;
     }
   } else {
-    body.kind = raw === 'adc' ? 'adc' : 'out';
+    body.kind = raw === 'adc' ? 'adc' : (raw === 'dht22' ? 'dht' : 'out');
     body.pin = Number($('d_pin').value);
     if (!body.pin){ $('dmsg').textContent = '没有可用引脚'; return; }
   }
