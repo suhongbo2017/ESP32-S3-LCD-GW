@@ -100,6 +100,7 @@ static esp_err_t h_root(httpd_req_t *req)
 
 static esp_err_t h_status(httpd_req_t *req)
 {
+    ha_mqtt_set_http_stage("status");
     net_manager_status_t st = net_manager_get_status();
     ha_sensor_t sn;
     ha_mqtt_get_last_sensor(&sn);
@@ -136,6 +137,7 @@ static esp_err_t h_status(httpd_req_t *req)
 /** GET /api/gpio —— 已定义设备 / 可定义引脚 / 板载占用引脚 */
 static esp_err_t h_gpio_info(httpd_req_t *req)
 {
+    ha_mqtt_set_http_stage("gpio");
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
 
@@ -183,6 +185,7 @@ static esp_err_t h_gpio_info(httpd_req_t *req)
 /** POST /api/gpio/define —— 定义一个命名输出（JSON: {"pin","name","desc"}） */
 static esp_err_t h_gpio_define(httpd_req_t *req)
 {
+    ha_mqtt_set_http_stage("define");
     char body[512];
     int total = req->content_len;
     if (total <= 0 || total >= (int)sizeof(body)) {
@@ -254,6 +257,7 @@ static esp_err_t h_gpio_define(httpd_req_t *req)
 /** POST /api/device?id=<id>&value=0|1 —— 设置命名设备开关 */
 static esp_err_t h_device_set(httpd_req_t *req)
 {
+    ha_mqtt_set_http_stage("device");
     char qs[160];
     char id[32] = { 0 };
     if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) != ESP_OK) {
@@ -295,6 +299,7 @@ static esp_err_t h_device_set(httpd_req_t *req)
 /** GET /api/logs —— 列出 TF 日志目录 */
 static esp_err_t h_logs_list(httpd_req_t *req)
 {
+    ha_mqtt_set_http_stage("logs");
     cJSON *o = cJSON_CreateObject();
     cJSON *arr = cJSON_AddArrayToObject(o, "files");
     cJSON_AddBoolToObject(o, "ok", true);
@@ -381,6 +386,7 @@ static void url_decode(char *s)
 /** GET /api/config —— 当前配置（不回传密码明文） */
 static esp_err_t h_config_get(httpd_req_t *req)
 {
+    ha_mqtt_set_http_stage("config_get");
     const app_cfg_t *c = app_cfg_get();
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
@@ -397,6 +403,7 @@ static esp_err_t h_config_get(httpd_req_t *req)
 /** POST /api/config?wifi_ssid=..&mqtt_port=..&action=reset —— 写入 NVS，重启生效 */
 static esp_err_t h_config_post(httpd_req_t *req)
 {
+    ha_mqtt_set_http_stage("config_post");
     char qs[512];
     if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) != ESP_OK) {
         return send_err_json(req, "bad_query", "缺少参数");
@@ -440,6 +447,7 @@ static esp_err_t h_config_post(httpd_req_t *req)
 /** POST /api/ota —— 上传固件（原始 bin），成功后重启 */
 static esp_err_t h_ota_post(httpd_req_t *req)
 {
+    ha_mqtt_set_http_stage("ota");
     const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
     if (part == NULL) {
         return send_err_json(req, "no_part", "无可用 OTA 分区");
@@ -480,6 +488,7 @@ static esp_err_t h_ota_post(httpd_req_t *req)
 /** GET /api/history —— 温湿度历史（供页面曲线图） */
 static esp_err_t h_history(httpd_req_t *req)
 {
+    ha_mqtt_set_http_stage("history");
     const int MAXN = 240;
     sensor_sample_t *buf = malloc(sizeof(sensor_sample_t) * MAXN);
     if (buf == NULL) {
@@ -512,6 +521,7 @@ static esp_err_t h_history(httpd_req_t *req)
 /** POST /api/reboot —— 保存后重启设备 */
 static esp_err_t h_reboot_post(httpd_req_t *req)
 {
+    ha_mqtt_set_http_stage("reboot");
     ESP_LOGI(TAG, "收到重启请求，2 秒后重启");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
@@ -549,7 +559,7 @@ esp_err_t web_console_init(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = CONFIG_WEB_CONSOLE_PORT;
     cfg.max_uri_handlers = 16;
-    cfg.stack_size       = 8192;
+    cfg.stack_size       = 12288;
     cfg.lru_purge_enable = true;
     cfg.uri_match_fn     = httpd_uri_match_wildcard;   /* 支持通配符路径（日志下载） */
 

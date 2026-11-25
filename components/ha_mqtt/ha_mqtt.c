@@ -44,6 +44,14 @@ static const char *TAG = "ha_mqtt";
 #define HA_SENSOR_TASK_STACK  4096
 #define HA_SENSOR_TASK_PRIO   5
 #define HA_DEV_TOPIC_MAX      96
+#define HA_DEV_QUEUE_LEN      8
+
+/* 设备事件：状态变化或新定义（让 MQTT 发布脱离 HTTP/回调任务上下文） */
+typedef struct {
+    bool     define;   /*!< true=新定义（发 Discovery/订阅）；false=状态变化 */
+    bool     on;
+    device_t dev;
+} ha_dev_evt_t;
 
 /* ---------- 内部状态 ---------- */
 static esp_mqtt_client_handle_t s_client = NULL;
@@ -56,6 +64,9 @@ static void *s_handler_ctx[HA_MAX_HANDLERS];
 static ha_notify_t s_last_notify;           /*!< 最近一条通知（并入 state 发布） */
 static QueueHandle_t s_sensor_q = NULL;
 static TaskHandle_t  s_sensor_task = NULL;
+static QueueHandle_t s_dev_q = NULL;
+static TaskHandle_t  s_dev_task = NULL;
+static volatile const char *s_http_stage = "";
 static ha_sensor_handler_t s_sensor_handlers[HA_MAX_HANDLERS];
 static void *s_sensor_ctx[HA_MAX_HANDLERS];
 static ha_sensor_t s_last_sensor;           /*!< 最近一次传感器数据（rx_us==0 表示未收到过） */
@@ -128,6 +139,7 @@ static void publish_state(int retain)
     cJSON_AddNumberToObject(root, "uptime", (double)sec);
     cJSON_AddStringToObject(root, "notify_title", s_last_notify.title);
     cJSON_AddStringToObject(root, "notify_message", s_last_notify.message);
+    cJSON_AddStringToObject(root, "http", s_http_stage ? s_http_stage : "");
 
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -159,11 +171,19 @@ static void publish_device_state(const char *id, bool on)
     esp_mqtt_client_publish(s_client, topic, payload, (int)strlen(payload), 0, 1);
 }
 
-/** 设备注册表变化回调：Web 或 HA 改动后立即同步给 HA */
+/** 设备注册表变化回调：Web 或 HA 改动后投递给发布任务（不阻塞调用方） */
 static void on_device_changed(const char *id, bool on)
 {
-    ESP_LOGI(TAG, "设备 %s -> %s", id, on ? "ON" : "OFF");
-    publish_device_state(id, on);
+    if (s_dev_q == NULL) {
+        return;
+    }
+    ha_dev_evt_t ev = { 0 };
+    ev.define = false;
+    ev.on = on;
+    snprintf(ev.dev.id, sizeof(ev.dev.id), "%s", id);
+    if (xQueueSend(s_dev_q, &ev, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "设备事件队列已满，丢弃 %s", id);
+    }
 }
 
 /* ---------- MQTT Discovery ---------- */
@@ -277,16 +297,41 @@ static void subscribe_device(const device_t *d)
     publish_device_state(d->id, d->on);
 }
 
-/** 新定义设备：立即补发 Discovery + 订阅 + 状态（未连接时由重连流程统一处理） */
+/** 新定义设备：投递给发布任务（Discovery/订阅/状态由任务完成） */
 static void on_device_defined(const device_t *d)
 {
-    if (d == NULL || d->kind != DEV_OUT || s_client == NULL || !s_connected) {
+    if (d == NULL || d->kind != DEV_OUT || s_dev_q == NULL) {
         return;
     }
+    ha_dev_evt_t ev = { 0 };
+    ev.define = true;
+    ev.dev = *d;
+    if (xQueueSend(s_dev_q, &ev, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "设备事件队列已满，丢弃新定义 %s", d->id);
+    }
+}
+
+/** 设备事件发布任务：唯一在 HTTP/回调任务之外访问 MQTT 的路径之一 */
+static void dev_pub_task(void *arg)
+{
+    (void)arg;
+    ha_dev_evt_t ev;
+    for (;;) {
+        if (xQueueReceive(s_dev_q, &ev, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        if (s_client == NULL || !s_connected) {
+            continue;      /* 重连后会统一重发 Discovery 与状态 */
+        }
+        if (ev.define) {
 #if defined(CONFIG_HA_MQTT_DISCOVERY_ENABLE)
-    discovery_switch(d);
+            discovery_switch(&ev.dev);
 #endif
-    subscribe_device(d);
+            subscribe_device(&ev.dev);
+        } else {
+            publish_device_state(ev.dev.id, ev.on);
+        }
+    }
 }
 
 /* ---------- esp-mqtt 事件回调（轻量：只解析 + 入队） ---------- */
@@ -510,6 +555,14 @@ esp_err_t ha_mqtt_init(void)
     xTaskCreate(sensor_task, "ha_sensor", HA_SENSOR_TASK_STACK, NULL,
                 HA_SENSOR_TASK_PRIO, &s_sensor_task);
 
+    /* 1.2) 设备事件队列 + 发布任务（HTTP 定义/开关不直接调用 MQTT） */
+    s_dev_q = xQueueCreate(HA_DEV_QUEUE_LEN, sizeof(ha_dev_evt_t));
+    if (s_dev_q == NULL) {
+        ESP_LOGE(TAG, "设备事件队列创建失败");
+        return ESP_ERR_NO_MEM;
+    }
+    xTaskCreate(dev_pub_task, "ha_dev", 4096, NULL, 4, &s_dev_task);
+
     /* 2) esp-mqtt 客户端配置（Kconfig；匿名时 user/pass 留空。
           本版 esp-mqtt 无 DEFAULT 宏，字段显式初始化；client_id 留空=库自动生成） */
     esp_mqtt_client_config_t mqtt_cfg = { 0 };
@@ -616,4 +669,9 @@ esp_err_t ha_mqtt_publish_alert(const char *type, const char *message)
 bool ha_mqtt_is_connected(void)
 {
     return s_connected;
+}
+
+void ha_mqtt_set_http_stage(const char *stage)
+{
+    s_http_stage = stage ? stage : "";
 }

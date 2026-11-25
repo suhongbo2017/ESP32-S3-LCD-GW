@@ -86,6 +86,14 @@ esp_err_t ha_mqtt_publish_alert(const char *type, const char *message);
 /** @brief MQTT 当前是否已连接 broker */
 bool ha_mqtt_is_connected(void);
 
+/**
+ * @brief 记录 Web 服务器当前处理的请求（写入 state 心跳的 http 字段）
+ *
+ * 仅用于故障诊断：HTTP 卡死时，最后一次进入的 handler 会保留在心跳里。
+ * 传字符串字面量或常驻缓冲区；传 "" 表示空闲。
+ */
+void ha_mqtt_set_http_stage(const char *stage);
+
 #ifdef __cplusplus
 }
 #endif

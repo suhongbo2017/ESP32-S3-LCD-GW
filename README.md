@@ -599,7 +599,7 @@ CONFIG_LCD_ST7735_SPI_CLK_HZ = 40000000；RES = 128x160；TEST_PATTERN = n
 | 板卡地址 | ETH DHCP `192.168.99.26` | 与 broker 同网段 |
 | **HA 设备名** | **`Sensor-SU-1`**（`CONFIG_HA_MQTT_DEVICE_NAME`） | Discovery 的 device.name，实测已生效 |
 | 通知订阅主题 | `ha/esp32gw/notify` | JSON {"title","message","level":"info\|warn\|error"}；看板显示 **30s**（`CONFIG_HA_MQTT_NOTIFY_SHOW_MS=30000`） |
-| 状态发布主题 | `ha/esp32gw/state` | {"online","uplink","ip","uptime","notify_title","notify_message"}，心跳 5s |
+| 状态发布主题 | `ha/esp32gw/state` | {"online","uplink","ip","uptime","notify_title","notify_message","http"}，心跳 5s（http=最后处理的 Web 请求，用于诊断） |
 | 设备开关主题 | `ha/esp32gw/dev/<id>/{set,state}`（`CONFIG_HA_MQTT_TOPIC_DEV_PREFIX`） | id=`light/fan/aux1/aux2`；Discovery 生成 switch，命令 ON/OFF/1/0，state retain |
 | **传感器订阅主题** | **`esp32-sensor/data`**（`CONFIG_HA_MQTT_TOPIC_SENSOR`） | JSON {"temp","hum","rssi","uptime"}，现场节点约 **15s** 一条 |
 | 传感器离线判定 | **60s**（`CONFIG_HA_MQTT_SENSOR_STALE_MS`） | 超时看板显示 `温--℃ 湿--%` |
