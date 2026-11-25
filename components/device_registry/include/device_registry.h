@@ -127,6 +127,7 @@ typedef struct {
     int     idle_level;          /*!< 起始前总线电平（应为 1） */
     int     drive_low_level;     /*!< 驱动低电平时读回（应为 0） */
     int     release_level;       /*!< 释放后读回（应为 1） */
+    int     setup_us;            /*!< 进入临界区到释放的耗时 */
     int     resp_low_us;         /*!< 传感器应答低电平时长；-1=超时 */
     int     resp_high_us;        /*!< 应答高电平时长；-1=超时 */
     int     bit_high_us[40];     /*!< 每个 bit 的高电平时长；-1=超时 */

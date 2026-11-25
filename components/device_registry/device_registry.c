@@ -405,24 +405,16 @@ static bool adc_read(device_t *d)
 /* DHT22 / AM2302 单总线                                               */
 /* ------------------------------------------------------------------ */
 
-/** 等待引脚到达指定电平（微秒级；仅在临界区内调用） */
-static bool dht_wait_level(int pin, int level, int timeout_us)
-{
-    for (int i = 0; i < timeout_us; i++) {
-        if (gpio_get_level(pin) == level) {
-            return true;
-        }
-        esp_rom_delay_us(1);
-    }
-    return false;
-}
+static int dht_wait_us(int pin, int level, int timeout_us);
+static int dht_measure_us(int pin, int level, int timeout_us);
 
 static void dht_attach(device_t *d)
 {
     gpio_reset_pin(d->pin);
-    gpio_set_direction(d->pin, GPIO_MODE_INPUT_OUTPUT_OD);
+    gpio_set_direction(d->pin, GPIO_MODE_INPUT);
     gpio_set_pull_mode(d->pin, GPIO_PULLUP_ONLY);
-    gpio_set_level(d->pin, 1);      /* 释放总线 */
+    gpio_set_direction(d->pin, GPIO_MODE_INPUT_OUTPUT_OD);
+    gpio_set_level(d->pin, 1);
     d->interval_ms = 2500;
 }
 
@@ -431,23 +423,22 @@ static bool dht_read(device_t *d)
     const int pin = d->pin;
     uint8_t data[5] = { 0 };
 
-    gpio_set_level(pin, 0);                 /* 起始信号：拉低 2ms */
-    vTaskDelay(pdMS_TO_TICKS(2));
+    gpio_set_level(pin, 0);                 /* 起始信号：开漏拉低 10ms */
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
     bool ok = false;
     taskENTER_CRITICAL(&mux);
-    gpio_set_level(pin, 1);                 /* 在临界区内释放，避免中断错过应答 */
-    if (dht_wait_level(pin, 0, 200) &&      /* 传感器应答低 80us */
-        dht_wait_level(pin, 1, 120) &&      /* 高 80us */
-        dht_wait_level(pin, 0, 120)) {      /* 第一位起始低 */
+    gpio_set_level(pin, 1);                 /* 开漏释放：仅寄存器写入，时序快 */
+    if (dht_wait_us(pin, 0, 500) >= 0 &&    /* 传感器应答低 80us */
+        dht_wait_us(pin, 1, 500) >= 0 &&    /* 应答高 80us */
+        dht_wait_us(pin, 0, 500) >= 0) {    /* 等待应答高结束（bit0 低电平开始） */
         ok = true;
         for (int i = 0; i < 40 && ok; i++) {
-            if (!dht_wait_level(pin, 1, 120)) { ok = false; break; }
-            esp_rom_delay_us(40);           /* 26-28us=0，70us=1 */
-            int v = gpio_get_level(pin);
-            data[i / 8] = (uint8_t)((data[i / 8] << 1) | (v ? 1 : 0));
-            if (!dht_wait_level(pin, 0, 120)) { ok = false; break; }
+            if (dht_wait_us(pin, 1, 500) < 0) { ok = false; break; }
+            int dur = dht_measure_us(pin, 1, 500);   /* 26-28us=0，70us=1 */
+            if (dur < 0) { ok = false; break; }
+            data[i / 8] = (uint8_t)((data[i / 8] << 1) | (dur > 40 ? 1 : 0));
         }
     }
     taskEXIT_CRITICAL(&mux);
@@ -468,23 +459,25 @@ static bool dht_read(device_t *d)
 /** 等待到指定电平，返回耗时 us；超时返回 -1 */
 static int dht_wait_us(int pin, int level, int timeout_us)
 {
-    int us = 0;
-    while (us < timeout_us && gpio_get_level(pin) != level) {
-        esp_rom_delay_us(1);
-        us++;
+    int64_t t0 = esp_timer_get_time();
+    while (gpio_get_level(pin) != level) {
+        if ((int)(esp_timer_get_time() - t0) > timeout_us) {
+            return -1;
+        }
     }
-    return (us < timeout_us) ? us : -1;
+    return (int)(esp_timer_get_time() - t0);
 }
 
 /** 测量当前电平持续时长 us；超时返回 -1 */
 static int dht_measure_us(int pin, int level, int timeout_us)
 {
-    int us = 0;
-    while (us < timeout_us && gpio_get_level(pin) == level) {
-        esp_rom_delay_us(1);
-        us++;
+    int64_t t0 = esp_timer_get_time();
+    while (gpio_get_level(pin) == level) {
+        if ((int)(esp_timer_get_time() - t0) > timeout_us) {
+            return -1;
+        }
     }
-    return (us < timeout_us) ? us : -1;
+    return (int)(esp_timer_get_time() - t0);
 }
 
 esp_err_t device_dht_debug(int pin, device_dht_debug_t *out)
@@ -500,36 +493,40 @@ esp_err_t device_dht_debug(int pin, device_dht_debug_t *out)
     out->resp_high_us = -1;
 
     gpio_reset_pin(pin);
-    gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT_OD);
+    gpio_set_direction(pin, GPIO_MODE_INPUT);
     gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
+    gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT_OD);
     gpio_set_level(pin, 1);
-    esp_rom_delay_us(200);
+    esp_rom_delay_us(500);
     out->idle_level = gpio_get_level(pin);
 
     gpio_set_level(pin, 0);
     esp_rom_delay_us(50);
     out->drive_low_level = gpio_get_level(pin);
-    vTaskDelay(pdMS_TO_TICKS(2));
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    int64_t t_setup = esp_timer_get_time();
     taskENTER_CRITICAL(&mux);
-    gpio_set_level(pin, 1);                 /* 临界区内释放，避免中断窗口 */
+    gpio_set_level(pin, 1);
+    out->setup_us = (int)(esp_timer_get_time() - t_setup);
     out->release_level = gpio_get_level(pin);
-    out->resp_low_us = dht_wait_us(pin, 0, 200);
+    out->resp_low_us = dht_wait_us(pin, 0, 500);
     if (out->resp_low_us >= 0) {
-        out->resp_high_us = dht_wait_us(pin, 1, 200);
+        out->resp_high_us = dht_wait_us(pin, 1, 500);
     }
-    if (out->resp_low_us >= 0 && out->resp_high_us >= 0) {
+    if (out->resp_low_us >= 0 && out->resp_high_us >= 0 &&
+        dht_wait_us(pin, 0, 500) >= 0) {
         for (int i = 0; i < 40; i++) {
-            if (dht_wait_us(pin, 1, 200) < 0) {
+            if (dht_wait_us(pin, 1, 500) < 0) {
                 break;
             }
-            int dur = dht_measure_us(pin, 1, 200);
+            int dur = dht_measure_us(pin, 1, 500);
             out->bit_high_us[i] = dur;
             if (dur < 0) {
                 break;
             }
-            out->data[i / 8] = (uint8_t)((out->data[i / 8] << 1) | (dur > 50 ? 1 : 0));
+            out->data[i / 8] = (uint8_t)((out->data[i / 8] << 1) | (dur > 40 ? 1 : 0));
         }
     }
     taskEXIT_CRITICAL(&mux);

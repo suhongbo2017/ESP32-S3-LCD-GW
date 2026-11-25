@@ -401,7 +401,7 @@ static void subscribe_device(const device_t *d)
 /** 新定义设备：投递给发布任务（Discovery/订阅/状态由任务完成） */
 static void on_device_defined(const device_t *d)
 {
-    if (d == NULL || d->kind != DEV_OUT || s_dev_q == NULL) {
+    if (d == NULL || s_dev_q == NULL) {
         return;
     }
     ha_dev_evt_t ev = { 0 };

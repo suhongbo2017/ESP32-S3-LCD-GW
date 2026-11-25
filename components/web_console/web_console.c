@@ -451,6 +451,7 @@ static esp_err_t h_gpio_dht_test(httpd_req_t *req)
     cJSON_AddNumberToObject(o, "idle_level", d.idle_level);
     cJSON_AddNumberToObject(o, "drive_low_level", d.drive_low_level);
     cJSON_AddNumberToObject(o, "release_level", d.release_level);
+    cJSON_AddNumberToObject(o, "setup_us", d.setup_us);
     cJSON_AddNumberToObject(o, "resp_low_us", d.resp_low_us);
     cJSON_AddNumberToObject(o, "resp_high_us", d.resp_high_us);
     cJSON *bits = cJSON_AddArrayToObject(o, "bit_high_us");
