@@ -61,3 +61,19 @@ CONFIG_SPIRAM_MODE_QUAD=y          # 本板外置 PSRAM 为四线 QUAD
 CONFIG_SPIRAM_TYPE_AUTO=y          # 自动识别芯片；若识别失败可改 CONFIG_SPIRAM_TYPE_ESP_PSRAM64H
 CONFIG_SPIRAM_USE_MALLOC=y         # PSRAM 并入 malloc；大缓冲用 heap_caps_malloc(.., MALLOC_CAP_SPIRAM)
 CONFIG_SPIRAM_SPEED_80M=y          # 若出现不稳定，改 CONFIG_SPIRAM_SPEED_40M
+
+# ---- LVGL 运行配置【实测必需，勿删】 ----
+# 不用 LVGL 内置 64KB 内存池（内部 RAM 会被吃光，见 README §11.9）
+CONFIG_LV_USE_CLIB_MALLOC=y
+# CJK 字体为压缩格式；不开启则所有字形解码为空（见 README §11.4）
+CONFIG_LV_USE_FONT_COMPRESSED=y
+
+# ---- 本板 LCD 方向/颜色【实测必需】 ----
+CONFIG_LCD_ST7735_ROTATION_180=y
+# CONFIG_LCD_ST7735_RGB_BGR is not set
+
+# ---- 看板 / mDNS / TF 长文件名 ----
+CONFIG_HA_MQTT_NOTIFY_SHOW_MS=30000
+CONFIG_WEB_CONSOLE_MDNS_HOSTNAME="esp32gw"
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255

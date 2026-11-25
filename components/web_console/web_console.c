@@ -5,14 +5,12 @@
  * 端点：
  *   GET  /                      状态页（内嵌 HTML）
  *   GET  /api/status            状态 JSON
- *   GET  /api/gpio?pin=N        读 GPIO
- *   POST /api/gpio?pin=N&value=v 设置 GPIO 输出（需 Token）
+ *   GET  /api/devices           命名设备列表与状态
+ *   POST /api/device?id=&value=0|1 设置命名设备开关
  *   GET  /api/logs              列出 TF 日志
  *   GET  /api/logs/<file>       下载 TF 日志（防目录穿越）
  *
- * 安全：
- *   - 控制类接口校验 Token（URL 参数 ?token= 或请求头 X-Auth-Token）
- *   - GPIO 仅允许白名单引脚（GPIO1–9 / 39–42 / 47–48）
+ * 安全：设备引脚由 device_registry 白名单校验；日志下载校验文件名。
  */
 #include "web_console.h"
 #include "www_index.h"
@@ -31,7 +29,6 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "cJSON.h"
-#include "driver/gpio.h"
 #include "esp_heap_caps.h"
 
 #include "net_manager.h"
@@ -39,6 +36,7 @@
 #include "tf_storage.h"
 #include "app_cfg.h"
 #include "sensor_history.h"
+#include "device_registry.h"
 
 #if CONFIG_WEB_CONSOLE_MDNS_ENABLE
 #include "mdns.h"
@@ -50,51 +48,9 @@ static const char *TAG = "web_console";
 
 static httpd_handle_t s_server = NULL;
 
-/* GPIO 方向记录：0=未知 1=输入 2=输出（读操作不破坏已设置的输出） */
-#define PIN_MAX 64
-static uint8_t s_pin_dir[PIN_MAX];
-
 /* ------------------------------------------------------------------ */
-/* 工具：Token / 引脚白名单 / 查询参数                                  */
+/* 工具：查询参数                                                      */
 /* ------------------------------------------------------------------ */
-
-/** GPIO 白名单：仅本板引出且空闲的引脚 */
-static bool pin_allowed(int pin)
-{
-    return (pin >= 1 && pin <= 9) || (pin >= 39 && pin <= 42) || pin == 47 || pin == 48;
-}
-
-static bool token_ok(httpd_req_t *req)
-{
-    if (CONFIG_WEB_CONSOLE_TOKEN[0] == '\0') {
-        return true;    /* 未配置口令（不建议） */
-    }
-    char val[64] = { 0 };
-    if (httpd_req_get_hdr_value_str(req, "X-Auth-Token", val, sizeof(val)) == ESP_OK &&
-        strcmp(val, CONFIG_WEB_CONSOLE_TOKEN) == 0) {
-        return true;
-    }
-    char qs[160];
-    if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) == ESP_OK) {
-        char t[64] = { 0 };
-        if (httpd_query_key_value(qs, "token", t, sizeof(t)) == ESP_OK &&
-            strcmp(t, CONFIG_WEB_CONSOLE_TOKEN) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/** 只读接口是否放行 */
-static bool read_ok(httpd_req_t *req)
-{
-#if CONFIG_WEB_CONSOLE_PROTECT_READ
-    return token_ok(req);
-#else
-    (void)req;
-    return true;
-#endif
-}
 
 static int query_int(httpd_req_t *req, const char *key, int def)
 {
@@ -137,20 +93,12 @@ static esp_err_t send_err_json(httpd_req_t *req, const char *code, const char *m
 
 static esp_err_t h_root(httpd_req_t *req)
 {
-    if (!read_ok(req)) {
-        httpd_resp_set_status(req, "401 Unauthorized");
-        return httpd_resp_sendstr(req, "401: 需要 Token");
-    }
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     return httpd_resp_sendstr(req, WEB_CONSOLE_INDEX_HTML);
 }
 
 static esp_err_t h_status(httpd_req_t *req)
 {
-    if (!read_ok(req)) {
-        return send_err_json(req, "unauthorized", "需要 Token");
-    }
-
     net_manager_status_t st = net_manager_get_status();
     ha_sensor_t sn;
     ha_mqtt_get_last_sensor(&sn);
@@ -184,64 +132,73 @@ static esp_err_t h_status(httpd_req_t *req)
     return send_json(req, o);
 }
 
-/** GET /api/gpio?pin=N —— 读电平 */
-static esp_err_t h_gpio_get(httpd_req_t *req)
+/** GET /api/devices —— 列出命名设备及当前状态 */
+static esp_err_t h_devices(httpd_req_t *req)
 {
-    if (!read_ok(req)) {
-        return send_err_json(req, "unauthorized", "需要 Token");
-    }
-    int pin = query_int(req, "pin", -1);
-    if (!pin_allowed(pin)) {
-        return send_err_json(req, "bad_pin", "引脚不在白名单（1-9/39-42/47-48）");
-    }
-    if (s_pin_dir[pin] != 2) {          /* 非输出：按输入读 */
-        gpio_reset_pin(pin);
-        gpio_set_direction(pin, GPIO_MODE_INPUT);
-        s_pin_dir[pin] = 1;
-    }
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
-    cJSON_AddNumberToObject(o, "pin", pin);
-    cJSON_AddNumberToObject(o, "level", gpio_get_level(pin));
-    cJSON_AddStringToObject(o, "dir", s_pin_dir[pin] == 2 ? "OUTPUT" : "INPUT");
+    cJSON *arr = cJSON_AddArrayToObject(o, "devices");
+    for (int i = 0; i < device_count(); i++) {
+        const device_t *d = device_at(i);
+        if (d == NULL) {
+            continue;
+        }
+        bool on = false;
+        device_get(d->id, &on);
+        cJSON *it = cJSON_CreateObject();
+        cJSON_AddStringToObject(it, "id", d->id);
+        cJSON_AddStringToObject(it, "name", d->name);
+        cJSON_AddNumberToObject(it, "pin", d->pin);
+        cJSON_AddBoolToObject(it, "on", on);
+        cJSON_AddItemToArray(arr, it);
+    }
     return send_json(req, o);
 }
 
-/** POST /api/gpio?pin=N&value=0|1 —— 设为输出并置电平（需 Token） */
-static esp_err_t h_gpio_set(httpd_req_t *req)
+/** POST /api/device?id=<id>&value=0|1 —— 设置命名设备开关 */
+static esp_err_t h_device_set(httpd_req_t *req)
 {
-    if (!token_ok(req)) {
-        return send_err_json(req, "unauthorized", "需要 Token（?token= 或 X-Auth-Token）");
+    char qs[160];
+    char id[32] = { 0 };
+    if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) != ESP_OK) {
+        return send_err_json(req, "bad_query", "缺少参数");
     }
-    int pin = query_int(req, "pin", -1);
+    if (httpd_query_key_value(qs, "id", id, sizeof(id)) != ESP_OK) {
+        return send_err_json(req, "bad_id", "缺少 id 参数");
+    }
     int val = query_int(req, "value", -1);
-    if (!pin_allowed(pin)) {
-        return send_err_json(req, "bad_pin", "引脚不在白名单（1-9/39-42/47-48）");
-    }
     if (val != 0 && val != 1) {
         return send_err_json(req, "bad_value", "value 必须为 0 或 1");
     }
 
-    gpio_reset_pin(pin);
-    gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT);
-    gpio_set_level(pin, val);
-    s_pin_dir[pin] = 2;
-    ESP_LOGI(TAG, "GPIO%d <- %d（来自 %s）", pin, val, req->uri);
+    const device_t *d = device_find(id);
+    if (d == NULL) {
+        return send_err_json(req, "unknown_device", "设备未定义");
+    }
+
+    esp_err_t err = device_set(id, val != 0);
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_err_json(req, "not_ready", "设备未初始化");
+    }
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        return send_err_json(req, "read_only", "该设备不支持写入");
+    }
+    if (err != ESP_OK) {
+        return send_err_json(req, "set_failed", esp_err_to_name(err));
+    }
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
-    cJSON_AddNumberToObject(o, "pin", pin);
-    cJSON_AddNumberToObject(o, "level", val);
-    cJSON_AddStringToObject(o, "dir", "OUTPUT");
+    cJSON_AddStringToObject(o, "id", id);
+    cJSON_AddStringToObject(o, "name", d->name);
+    cJSON_AddNumberToObject(o, "pin", d->pin);
+    cJSON_AddBoolToObject(o, "on", val != 0);
     return send_json(req, o);
 }
 
 /** GET /api/logs —— 列出 TF 日志目录 */
 static esp_err_t h_logs_list(httpd_req_t *req)
 {
-    if (!read_ok(req)) {
-        return send_err_json(req, "unauthorized", "需要 Token");
-    }
     cJSON *o = cJSON_CreateObject();
     cJSON *arr = cJSON_AddArrayToObject(o, "files");
     cJSON_AddBoolToObject(o, "ok", true);
@@ -276,9 +233,6 @@ static esp_err_t h_logs_list(httpd_req_t *req)
 /** GET /api/logs/<file> —— 下载（防目录穿越） */
 static esp_err_t h_logs_get(httpd_req_t *req)
 {
-    if (!read_ok(req)) {
-        return send_err_json(req, "unauthorized", "需要 Token");
-    }
     const char *name = req->uri + strlen(URI_LOGS_PREFIX);
     if (*name == '\0' || strstr(name, "..") != NULL || strchr(name, '/') != NULL) {
         return send_err_json(req, "bad_name", "非法文件名");
@@ -331,9 +285,6 @@ static void url_decode(char *s)
 /** GET /api/config —— 当前配置（不回传密码明文） */
 static esp_err_t h_config_get(httpd_req_t *req)
 {
-    if (!read_ok(req)) {
-        return send_err_json(req, "unauthorized", "需要 Token");
-    }
     const app_cfg_t *c = app_cfg_get();
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
@@ -347,12 +298,9 @@ static esp_err_t h_config_get(httpd_req_t *req)
     return send_json(req, o);
 }
 
-/** POST /api/config?wifi_ssid=..&mqtt_port=..&action=reset —— 写入 NVS（需 Token，重启生效） */
+/** POST /api/config?wifi_ssid=..&mqtt_port=..&action=reset —— 写入 NVS，重启生效 */
 static esp_err_t h_config_post(httpd_req_t *req)
 {
-    if (!token_ok(req)) {
-        return send_err_json(req, "unauthorized", "需要 Token");
-    }
     char qs[512];
     if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) != ESP_OK) {
         return send_err_json(req, "bad_query", "缺少参数");
@@ -393,12 +341,9 @@ static esp_err_t h_config_post(httpd_req_t *req)
     return send_json(req, o);
 }
 
-/** POST /api/ota —— 上传固件（原始 bin，需 Token），成功后重启 */
+/** POST /api/ota —— 上传固件（原始 bin），成功后重启 */
 static esp_err_t h_ota_post(httpd_req_t *req)
 {
-    if (!token_ok(req)) {
-        return send_err_json(req, "unauthorized", "需要 Token");
-    }
     const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
     if (part == NULL) {
         return send_err_json(req, "no_part", "无可用 OTA 分区");
@@ -439,9 +384,6 @@ static esp_err_t h_ota_post(httpd_req_t *req)
 /** GET /api/history —— 温湿度历史（供页面曲线图） */
 static esp_err_t h_history(httpd_req_t *req)
 {
-    if (!read_ok(req)) {
-        return send_err_json(req, "unauthorized", "需要 Token");
-    }
     const int MAXN = 240;
     sensor_sample_t *buf = malloc(sizeof(sensor_sample_t) * MAXN);
     if (buf == NULL) {
@@ -474,9 +416,6 @@ static esp_err_t h_history(httpd_req_t *req)
 /** POST /api/reboot —— 保存后重启设备 */
 static esp_err_t h_reboot_post(httpd_req_t *req)
 {
-    if (!token_ok(req)) {
-        return send_err_json(req, "unauthorized", "需要 Token");
-    }
     ESP_LOGI(TAG, "收到重启请求，2 秒后重启");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
@@ -510,7 +449,6 @@ esp_err_t web_console_init(void)
     if (s_server != NULL) {
         return ESP_OK;
     }
-    memset(s_pin_dir, 0, sizeof(s_pin_dir));
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = CONFIG_WEB_CONSOLE_PORT;
@@ -524,8 +462,8 @@ esp_err_t web_console_init(void)
     static const httpd_uri_t uris[] = {
         { .uri = "/",                .method = HTTP_GET,  .handler = h_root },
         { .uri = "/api/status",      .method = HTTP_GET,  .handler = h_status },
-        { .uri = "/api/gpio",        .method = HTTP_GET,  .handler = h_gpio_get },
-        { .uri = "/api/gpio",        .method = HTTP_POST, .handler = h_gpio_set },
+        { .uri = "/api/devices",     .method = HTTP_GET,  .handler = h_devices },
+        { .uri = "/api/device",      .method = HTTP_POST, .handler = h_device_set },
         { .uri = "/api/logs",        .method = HTTP_GET,  .handler = h_logs_list },
         { .uri = "/api/logs/*",      .method = HTTP_GET,  .handler = h_logs_get },
         { .uri = "/api/config",      .method = HTTP_GET,  .handler = h_config_get },
@@ -540,8 +478,7 @@ esp_err_t web_console_init(void)
 
     start_mdns();
 
-    ESP_LOGI(TAG, "Web 控制台已启动：端口 %d，Token %s",
-             CONFIG_WEB_CONSOLE_PORT,
-             CONFIG_WEB_CONSOLE_TOKEN[0] ? "已启用" : "未设置（不安全）");
+    ESP_LOGI(TAG, "Web 控制台已启动：端口 %d（无 Token 鉴权）",
+             CONFIG_WEB_CONSOLE_PORT);
     return ESP_OK;
 }

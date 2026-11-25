@@ -45,6 +45,8 @@
 #include "web_console.h"
 #include "app_cfg.h"
 #include "sensor_history.h"
+#include "device_registry.h"
+#include "dev_gpio_out.h"
 #include "esp_netif_sntp.h"
 
 static const char *TAG = "app_main";
@@ -374,6 +376,11 @@ void app_main(void)
     /* 0) 运行时可改参数（NVS 优先，否则用 Kconfig 默认；Web 控制台可修改） */
     ESP_ERROR_CHECK(app_cfg_init());
     log_heap("app_cfg");
+
+    /* 0.1) 命名 GPIO 输出：Web 按钮与 HA switch 共用同一张设备表 */
+    ESP_ERROR_CHECK(dev_gpio_out_register_all());
+    ESP_ERROR_CHECK(device_registry_init());
+    log_heap("devices");
 
     /* 1) 有线主链路（NULL = 使用 Kconfig 默认配置：DHCP 或静态 IP） */
     ESP_ERROR_CHECK(net_eth_init(NULL));

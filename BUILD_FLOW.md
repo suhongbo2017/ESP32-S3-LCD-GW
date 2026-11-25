@@ -18,6 +18,7 @@
 | 有线 IP | DHCP，已实测 `192.168.99.26` |
 | WiFi IP | DHCP，已实测 `192.168.99.32` |
 | Web 控制台 | `http://esp32gw.local/` 或当前活动 IP |
+| Web 控制台鉴权 | 无 Token 鉴权；所有能访问设备的客户端均可调用页面和 `/api/*`。仅在可信、隔离的局域网使用。 |
 
 ## 2. 修改前检查
 
@@ -136,13 +137,21 @@ curl --noproxy "*" -X POST "http://<网关IP>/api/ota" ^
 {"ok":true,"rebooting":true}
 ```
 
-OTA 后等待 30 秒，再访问：
+注意：如果 HTTP 服务已经停止，OTA 也不可用，此时只能通过 CH340K 串口或断电重启恢复。
 
-```text
-http://<网关IP>/api/status
+### 3.7 Web 控制台访问
+
+Web 服务不启用 Token 鉴权，页面和所有 `/api/*` 端点可直接访问：
+
+```bat
+curl --noproxy "*" -i "http://<网关IP>/api/status"
+curl --noproxy "*" -i "http://<网关IP>/api/devices"
+curl --noproxy "*" -i "http://<网关IP>/api/logs"
+curl --noproxy "*" -X POST "http://<网关IP>/api/device?id=light&value=1"
 ```
 
-注意：如果 HTTP 服务已经停止，OTA 也不可用，此时只能通过 CH340K 串口或断电重启恢复。
+HTTP 为明文传输，且控制接口包含命名 GPIO 输出、配置、重启和 OTA；仅在可信、隔离的局域网使用，禁止暴露到公网或不受信任的网段。
+
 
 ## 4. 修改后的验证顺序
 
@@ -169,7 +178,7 @@ http://<网关IP>/api/status
 
 - GPIO15 同时为 W5500 RST 和 LCD RST，LCD 驱动不得再次操作该复位 GPIO。
 - GPIO14 为 W5500 中断。
-- GPIO1–9、39–42、47–48 是 Web GPIO 控制白名单；不要绕过白名单控制板载占用脚。
+- GPIO1–9、39–42、47–48 是命名输出白名单（`components/devices/dev_gpio_out.c`）；不要绕过设备表控制板载占用脚。
 - W5500 使用 SPI2，LCD 使用 SPI3；不要把两者改到同一 SPI 总线而不重新核对 CS、INT、RST。
 - 8MB PSRAM 用于 LVGL 大缓冲；不要把整帧缓冲或大内存池移回内部 RAM。
 
@@ -179,12 +188,13 @@ http://<网关IP>/api/status
 - MQTT 当前实测 broker 为 `192.168.99.253:1883`，匿名接入。
 - 传感器主题为 `esp32-sensor/data`，正常约 15 秒一条。
 - 传感器掉线阈值默认 120000ms，告警主题为 `ha/esp32gw/alert`。
+- 命名输出使用 `ha/esp32gw/dev/<id>/set`（命令 ON/OFF/1/0）与 `.../state`（retain）；HA 通过 Discovery 自动生成 switch。
 - 不要把局域网设备地址通过代理访问；本机存在代理时，curl 使用 `--noproxy "*"`。
 - DHCP 地址可能变化，验证时以 MQTT state 或 `/api/status` 返回的活动 IP 为准。
 
 ### 5.4 Web 和 OTA
 
-- Web 默认无 Token，仅适用于可信局域网；跨网段部署前必须开启 Token。
+- Web 无 Token 鉴权，仅适用于可信、隔离的局域网；不得直接暴露到公网。
 - HTTP 服务长时间运行异常时，先用 MQTT state 判断设备是否仍在运行，再用串口抓日志。
 - HTTP 不通时不要反复 OTA；先确认 TCP 80、活动 IP、ARP 和串口连接。
 - Windows 出现“能 ping 但 HTTP 不通”时，先清理 ARP 缓存并确认访问的是设备当前 IP。

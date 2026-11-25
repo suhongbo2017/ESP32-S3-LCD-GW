@@ -30,6 +30,7 @@
 #include "app_cfg.h"             /* NVS 运行时可改参数 */
 #include "sensor_history.h"      /* 温湿度历史（Web 曲线） */
 #include "net_manager.h"
+#include "device_registry.h"     /* 命名开关量设备（HA switch） */
 
 static const char *TAG = "ha_mqtt";
 
@@ -42,6 +43,7 @@ static const char *TAG = "ha_mqtt";
 #define HA_SENSOR_QUEUE_LEN   4
 #define HA_SENSOR_TASK_STACK  4096
 #define HA_SENSOR_TASK_PRIO   5
+#define HA_DEV_TOPIC_MAX      96
 
 /* ---------- 内部状态 ---------- */
 static esp_mqtt_client_handle_t s_client = NULL;
@@ -137,6 +139,33 @@ static void publish_state(int retain)
     free(payload);
 }
 
+/* ---------- 命名设备（HA switch） ---------- */
+
+/** 生成 <prefix>/<id>/<suffix> 主题 */
+static void dev_topic(char *buf, size_t n, const char *id, const char *suffix)
+{
+    snprintf(buf, n, "%s/%s/%s", CONFIG_HA_MQTT_TOPIC_DEV_PREFIX, id, suffix);
+}
+
+/** 发布单个设备状态（retain：HA 重启后恢复开关状态） */
+static void publish_device_state(const char *id, bool on)
+{
+    if (s_client == NULL || !s_connected) {
+        return;
+    }
+    char topic[HA_DEV_TOPIC_MAX];
+    dev_topic(topic, sizeof(topic), id, "state");
+    const char *payload = on ? "ON" : "OFF";
+    esp_mqtt_client_publish(s_client, topic, payload, (int)strlen(payload), 0, 1);
+}
+
+/** 设备注册表变化回调：Web 或 HA 改动后立即同步给 HA */
+static void on_device_changed(const char *id, bool on)
+{
+    ESP_LOGI(TAG, "设备 %s -> %s", id, on ? "ON" : "OFF");
+    publish_device_state(id, on);
+}
+
 /* ---------- MQTT Discovery ---------- */
 
 #if defined(CONFIG_HA_MQTT_DISCOVERY_ENABLE)
@@ -176,6 +205,52 @@ static void discovery_sensor(const char *obj_id, const char *name,
     ESP_LOGI(TAG, "Discovery 已发布：%s", obj_id);
 }
 
+/** 发布一个 switch（DEV_OUT）的 discovery 配置 */
+static void discovery_switch(const device_t *d)
+{
+    char obj_id[48];
+    snprintf(obj_id, sizeof(obj_id), "esp32gw_dev_%s", d->id);
+
+    char state_topic[HA_DEV_TOPIC_MAX];
+    char cmd_topic[HA_DEV_TOPIC_MAX];
+    dev_topic(state_topic, sizeof(state_topic), d->id, "state");
+    dev_topic(cmd_topic, sizeof(cmd_topic), d->id, "set");
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return;
+    }
+    cJSON_AddStringToObject(root, "name", d->name);
+    cJSON_AddStringToObject(root, "object_id", obj_id);
+    cJSON_AddStringToObject(root, "unique_id", obj_id);
+    cJSON_AddStringToObject(root, "state_topic", state_topic);
+    cJSON_AddStringToObject(root, "command_topic", cmd_topic);
+    cJSON_AddStringToObject(root, "payload_on", "ON");
+    cJSON_AddStringToObject(root, "payload_off", "OFF");
+    cJSON_AddStringToObject(root, "state_on", "ON");
+    cJSON_AddStringToObject(root, "state_off", "OFF");
+    cJSON_AddStringToObject(root, "availability_topic", CONFIG_HA_MQTT_TOPIC_STATE);
+    cJSON_AddStringToObject(root, "availability_template",
+                            "{{ 'online' if value_json.online|default(false) else 'offline' }}");
+    cJSON *dev = cJSON_AddObjectToObject(root, "device");
+    cJSON_AddStringToObject(dev, "identifiers", "esp32gw_device");
+    cJSON_AddStringToObject(dev, "name", CONFIG_HA_MQTT_DEVICE_NAME);
+    cJSON_AddStringToObject(dev, "model", "esp32s3_gateway");
+    cJSON_AddStringToObject(dev, "manufacturer", "DIY");
+
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (payload == NULL) {
+        return;
+    }
+
+    char topic[96];
+    snprintf(topic, sizeof(topic), "homeassistant/switch/%s/config", obj_id);
+    esp_mqtt_client_publish(s_client, topic, payload, (int)strlen(payload), 0, 1);
+    free(payload);
+    ESP_LOGI(TAG, "Discovery 已发布：%s", obj_id);
+}
+
 /** 连接成功后发布所有 discovery（HA 幂等，失败重连后会重发） */
 static void publish_discovery(void)
 {
@@ -183,10 +258,51 @@ static void publish_discovery(void)
     discovery_sensor("ip", "GW IP", "{{ value_json.ip }}");
     discovery_sensor("uptime", "GW Uptime", "{{ value_json.uptime }}");
     discovery_sensor("notify", "GW Notify", "{{ value_json.notify_title }}");
+    for (int i = 0; i < device_count(); i++) {
+        const device_t *d = device_at(i);
+        if (d != NULL && d->kind == DEV_OUT) {
+            discovery_switch(d);
+        }
+    }
 }
 #endif /* CONFIG_HA_MQTT_DISCOVERY_ENABLE */
 
 /* ---------- esp-mqtt 事件回调（轻量：只解析 + 入队） ---------- */
+
+/** 解析 <prefix>/<id>/set 主题与 ON/OFF/1/0 载荷 */
+static bool parse_device_cmd(const char *topic, size_t topic_len,
+                             const char *data, size_t data_len,
+                             char *id, size_t id_size, bool *on)
+{
+    const char *prefix = CONFIG_HA_MQTT_TOPIC_DEV_PREFIX;
+    size_t plen = strlen(prefix);
+    if (topic_len <= plen + 5 || strncmp(topic, prefix, plen) != 0 ||
+        topic[plen] != '/') {
+        return false;
+    }
+    const char *rest = topic + plen + 1;
+    size_t rest_len = topic_len - plen - 1;
+    if (rest_len <= 4 || memcmp(rest + rest_len - 4, "/set", 4) != 0) {
+        return false;
+    }
+    size_t id_len = rest_len - 4;
+    if (id_len == 0 || id_len >= id_size) {
+        return false;
+    }
+    memcpy(id, rest, id_len);
+    id[id_len] = '\0';
+
+    if (data_len == 2 && memcmp(data, "ON", 2) == 0) {
+        *on = true;
+    } else if (data_len == 3 && memcmp(data, "OFF", 3) == 0) {
+        *on = false;
+    } else if (data_len == 1 && (data[0] == '1' || data[0] == '0')) {
+        *on = (data[0] == '1');
+    } else {
+        return false;
+    }
+    return true;
+}
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                                int32_t event_id, void *event_data)
@@ -209,6 +325,18 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
 #if defined(CONFIG_HA_MQTT_DISCOVERY_ENABLE)
         publish_discovery();
 #endif
+        /* 命名设备：订阅命令主题并发布当前状态（retain） */
+        for (int i = 0; i < device_count(); i++) {
+            const device_t *d = device_at(i);
+            if (d == NULL || d->kind != DEV_OUT) {
+                continue;
+            }
+            char topic[HA_DEV_TOPIC_MAX];
+            dev_topic(topic, sizeof(topic), d->id, "set");
+            esp_mqtt_client_subscribe_single(s_client, topic, 1);
+            ESP_LOGI(TAG, "已订阅：%s", topic);
+            publish_device_state(d->id, d->on);
+        }
         publish_state(1);   /* retain 上线状态，HA 重启后也能确认在线 */
         break;
 
@@ -241,6 +369,17 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                 tf_storage_log("sensor", "temp=%.2f,hum=%.2f,rssi=%d",
                                sn.temp, sn.hum, sn.rssi);
                 sensor_history_add(sn.temp, sn.hum);   /* 供 Web 曲线图 */
+            }
+        } else if (ev->data_len > 0 && ev->current_data_offset == 0) {
+            char id[32];
+            bool on;
+            if (parse_device_cmd(ev->topic, ev->topic_len, ev->data, ev->data_len,
+                                 id, sizeof(id), &on)) {
+                esp_err_t err = device_set(id, on);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "设备命令失败：%s -> %s（%s）",
+                             id, on ? "ON" : "OFF", esp_err_to_name(err));
+                }
             }
         }
         break;
@@ -376,6 +515,9 @@ esp_err_t ha_mqtt_init(void)
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID,
                                                    mqtt_event_handler, NULL));
     ESP_ERROR_CHECK(esp_mqtt_client_start(s_client));
+
+    /* 2.1) 设备状态变化 -> 立即发布 HA switch 状态（Web 触发的改动也走这里） */
+    device_registry_set_change_listener(on_device_changed);
 
     /* 3) 心跳任务（周期发布 state） */
     xTaskCreate(heartbeat_task, "ha_hb", HA_HEARTBEAT_STACK, NULL,

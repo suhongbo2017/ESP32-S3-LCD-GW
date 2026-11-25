@@ -7,6 +7,8 @@
  *  - 订阅 ha/esp32gw/notify，解析 JSON 通知 → 队列投递给 UI（不阻塞 MQTT 回调）
  *  - 周期发布 ha/esp32gw/state（uplink/ip/uptime/online + 最近通知）
  *  - MQTT Discovery：向 homeassistant/... 发布配置，HA 自动生成实体
+ *  - 命名开关量输出：Discovery 生成 switch，订阅 <前缀>/<id>/set，
+ *    状态变化发布 <前缀>/<id>/state（retain）
  *  - 断线重连由 esp-mqtt 自动处理；连接使用默认 netif（ETH 优先，net_manager 已切换）
  */
 #pragma once

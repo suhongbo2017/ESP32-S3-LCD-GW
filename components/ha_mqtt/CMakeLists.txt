@@ -6,5 +6,5 @@
 idf_component_register(
     SRCS "ha_mqtt.c"
     INCLUDE_DIRS "include"
-    REQUIRES mqtt json net_manager tf_storage app_cfg sensor_history log esp_timer esp_common freertos
+    REQUIRES mqtt json net_manager tf_storage app_cfg sensor_history device_registry log esp_timer esp_common freertos
 )

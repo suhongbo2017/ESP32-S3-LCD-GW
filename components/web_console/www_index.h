@@ -112,20 +112,10 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
   </section>
 
   <section class="card pane">
-    <h2>GPIO 控制 <span class="msg" id="gmsg"></span></h2>
+    <h2>设备开关 <span class="msg" id="gmsg"></span></h2>
     <div class="bd">
-      <div class="row">
-        <span class="sub">引脚</span>
-        <select id="pin">
-          <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
-          <option>6</option><option>7</option><option>8</option><option>9</option>
-          <option>39</option><option>40</option><option>41</option><option>42</option><option>47</option><option>48</option>
-        </select>
-        <button onclick="gpioRead()">读取</button>
-        <button class="pri" onclick="gpioSet(1)">置高</button>
-        <button class="sec" onclick="gpioSet(0)">置低</button>
-      </div>
-      <div class="msg">可用引脚：GPIO1–9、39–42、47–48（其余为板载占用，已屏蔽）</div>
+      <div class="row" id="devs"><button disabled>加载中…</button></div>
+      <div class="msg">按钮来自固件设备表；Home Assistant 中的同名 switch 会同步控制同一路输出</div>
     </div>
   </section>
 
@@ -178,7 +168,7 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
   </section>
 
   <div class="sub" style="margin-top:6px">
-    只读接口：<code>/api/status</code> <code>/api/logs</code> <code>/api/history</code> ｜ 控制接口：<code>POST /api/gpio</code>
+    只读接口：<code>/api/status</code> <code>/api/devices</code> <code>/api/logs</code> <code>/api/history</code> ｜ 控制接口：<code>POST /api/device</code>
   </div>
 </div>
 
@@ -250,18 +240,20 @@ async function downloadLog(name){
   finally{ if (url) URL.revokeObjectURL(url); }
 }
 
-async function gpioRead(){
+async function loadDevices(){
   try{
-    const r = await api('/api/gpio?pin=' + $('pin').value);
-    const j = await r.json();
-    $('gmsg').textContent = j.ok ? ('GPIO' + j.pin + ' 电平=' + j.level) : ('失败: ' + j.error);
-  }catch(e){ $('gmsg').textContent = '失败: ' + e; }
+    const j = await (await api('/api/devices')).json();
+    const list = (j.devices || []);
+    $('devs').innerHTML = list.length
+      ? list.map(d => `<button class="${d.on ? 'pri' : 'sec'}" onclick="deviceSet('${d.id}',${d.on ? 0 : 1})">${d.name}：${d.on ? '开' : '关'}</button>`).join('')
+      : '<span class="msg">（固件中未定义设备）</span>';
+  }catch(e){ $('devs').innerHTML = '<button disabled>加载失败</button>'; }
 }
-async function gpioSet(v){
+async function deviceSet(id, v){
   try{
-    const r = await api('/api/gpio?pin=' + $('pin').value + '&value=' + v, {method:'POST'});
-    const j = await r.json();
-    $('gmsg').textContent = j.ok ? ('GPIO' + j.pin + ' 已置' + (v ? '高' : '低')) : ('失败: ' + (j.error||r.status));
+    const j = await (await api('/api/device?id=' + encodeURIComponent(id) + '&value=' + v, {method:'POST'})).json();
+    $('gmsg').textContent = j.ok ? ((j.name || id) + (j.on ? ' 已开启' : ' 已关闭')) : ('失败: ' + (j.error || j.message || ''));
+    loadDevices();
   }catch(e){ $('gmsg').textContent = '失败: ' + e; }
 }
 
@@ -371,9 +363,10 @@ async function ota(){
     $('omsg').textContent = j.ok ? '升级成功，设备重启中…' : ('失败: ' + (j.error || j.message));
   }catch(e){ $('omsg').textContent = '连接中断（设备可能已升级并重启）'; }
 }
-refresh(); loadLogs(); cfgLoad(); drawChart();
+refresh(); loadLogs(); cfgLoad(); drawChart(); loadDevices();
 setInterval(refresh, 2000);
 setInterval(drawChart, 30000);
+setInterval(loadDevices, 5000);
 </script>
 </body>
 </html>)HTML";

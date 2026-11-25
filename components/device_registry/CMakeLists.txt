@@ -1,0 +1,8 @@
+# ---------------------------------------------------------------------------
+# device_registry：命名 GPIO 设备注册表（Web 控件 + HA switch 共用）
+# ---------------------------------------------------------------------------
+idf_component_register(
+    SRCS "device_registry.c"
+    INCLUDE_DIRS "include"
+    REQUIRES driver log esp_common freertos
+)

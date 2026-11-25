@@ -10,7 +10,7 @@
 | [`README.md`](./README.md)（本文） | 架构、编译/烧录、里程碑、**§11 已确认参数（用户实测 OK）**、踩坑记录 |
 | [`PINMAP.md`](./PINMAP.md) | 原厂电路板引脚映射（W5500/LCD/TF/串口）+ 实测方向与颜色配置 |
 | [`SOLUTIONS.md`](./SOLUTIONS.md) | 方案选型（为何选方案 A） |
-| [`DEVICES.md`](./DEVICES.md) | **模块化 GPIO 设备扩展设计稿（未实现）**—将来加继电器/按钮/ADC/PWM 等设备时照此实现 |
+| [`DEVICES.md`](./DEVICES.md) | **模块化 GPIO 设备设计**—DEV_OUT（命名开关）已实现；继电器/按钮/ADC/PWM 按此扩展 |
 | [`BUILD_FLOW.md`](./BUILD_FLOW.md) | **项目构建流水**：环境、配置、编译、烧录、OTA、验证、故障排查和大修改文档同步规则 |
 | `partitions.csv` | 分区表（双 OTA：`ota_0`/`ota_1` 各 3MB） |
 
@@ -600,6 +600,7 @@ CONFIG_LCD_ST7735_SPI_CLK_HZ = 40000000；RES = 128x160；TEST_PATTERN = n
 | **HA 设备名** | **`Sensor-SU-1`**（`CONFIG_HA_MQTT_DEVICE_NAME`） | Discovery 的 device.name，实测已生效 |
 | 通知订阅主题 | `ha/esp32gw/notify` | JSON {"title","message","level":"info\|warn\|error"}；看板显示 **30s**（`CONFIG_HA_MQTT_NOTIFY_SHOW_MS=30000`） |
 | 状态发布主题 | `ha/esp32gw/state` | {"online","uplink","ip","uptime","notify_title","notify_message"}，心跳 5s |
+| 设备开关主题 | `ha/esp32gw/dev/<id>/{set,state}`（`CONFIG_HA_MQTT_TOPIC_DEV_PREFIX`） | id=`light/fan/aux1/aux2`；Discovery 生成 switch，命令 ON/OFF/1/0，state retain |
 | **传感器订阅主题** | **`esp32-sensor/data`**（`CONFIG_HA_MQTT_TOPIC_SENSOR`） | JSON {"temp","hum","rssi","uptime"}，现场节点约 **15s** 一条 |
 | 传感器离线判定 | **60s**（`CONFIG_HA_MQTT_SENSOR_STALE_MS`） | 超时看板显示 `温--℃ 湿--%` |
 | 看板传感器行 | y=98，`温24.2℃ 湿44.5%`，`LV_LABEL_LONG_WRAP` 兜底 | CJK 字体下约 109px，116px 内容宽内不溢出（带空格会溢出—已踩坑） |
@@ -627,9 +628,10 @@ CONFIG_LCD_ST7735_SPI_CLK_HZ = 40000000；RES = 128x160；TEST_PATTERN = n
 | HTTP 端口 | **80**（`CONFIG_WEB_CONSOLE_PORT`） | esp_http_server，绑默认 netif（ETH/WiFi 都能访） |
 | 访问地址 | **`http://esp32gw.local/`** 或 `http://192.168.99.26/` | mDNS 主机名 `esp32gw` |
 | mDNS 组件 | **`espressif/mdns`（组件仓库）** | ⚠️ IDF v5.x 已把 mdns 移出内核，必须用 `idf_component.yml` 声明 |
-| 鉴权 | **默认关闭**（`CONFIG_WEB_CONSOLE_TOKEN=""`） | 需开启时设 Token，可用 `?token=` 或 `X-Auth-Token` |
-| GPIO 白名单 | **GPIO1–9 / 39–42 / 47–48** | 板载占用（26–32/33–38/43–44/45–46/0）全部屏蔽，非白名单返回 `bad_pin` |
-| 接口 | `/api/status` `/api/history` `/api/gpio` `/api/logs` `/api/config` `/api/reboot` `/api/ota` | 页面 `GET /` 为内嵌 HTML |
+| 鉴权 | **无 Token**（已移除） | 页面与所有 `/api/*` 可直接访问；仅限可信局域网，禁止暴露公网 |
+| GPIO 白名单 | **GPIO1–9 / 39–42 / 47–48** | 板载占用（26–32/33–38/43–44/45–46/0）全部屏蔽；设备表越界引脚在启动时注册失败 |
+| 命名设备 | `light`/`fan`/`aux1`/`aux2` → **GPIO4–7** | 定义在 `components/devices/dev_gpio_out.c`；Web 按钮与 HA switch 共用，上电默认关 |
+| 接口 | `/api/status` `/api/devices` `/api/device` `/api/history` `/api/logs` `/api/config` `/api/reboot` `/api/ota` | 页面 `GET /` 为内嵌 HTML；`POST /api/device?id=<id>&value=0|1` |
 | 温湿度曲线 | **SVG 双轴**（温度左轴/湿度右轴），240 条 ≈ 1 小时，纯前端无库 | 已取代屏幕截图功能 |
 | ~~屏幕截图~~ | **已移除** | 与 `/api/status` 数据重复，日常无价值 |
 

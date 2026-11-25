@@ -55,6 +55,13 @@ config HA_MQTT_TOPIC_SENSOR
         现场 ESP32 传感器节点周期发布的温湿度数据（JSON）：
         {"temp":24.9,"hum":45.2,"rssi":-38,"uptime":14734}
 
+config HA_MQTT_TOPIC_DEV_PREFIX
+    string "命名设备 MQTT 主题前缀"
+    default "ha/esp32gw/dev"
+    help
+        每个开关量输出使用 <前缀>/<id>/set（订阅，ON/OFF/1/0）
+        和 <前缀>/<id>/state（retain 发布，ON/OFF）。
+
 config HA_MQTT_DEVICE_NAME
     string "HA 中显示的设备名称"
     default "Sensor-SU-1"
@@ -77,11 +84,12 @@ config HA_MQTT_DISCOVERY_ENABLE
     default y
     help
         连接成功后向 homeassistant/... 发布 discovery 配置，
-        生成 uplink / ip / uptime / notify 四个传感器实体。
+        生成 uplink / ip / uptime / notify 传感器实体，
+        以及每个命名输出对应的 switch 实体。
 
 config HA_MQTT_NOTIFY_SHOW_MS
     int "看板通知显示时长 (ms)"
-    default 10000
+    default 30000
     help
         收到 HA 通知后在 LCD 看板显示时长，超时自动恢复常规状态显示。
 
