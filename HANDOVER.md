@@ -92,6 +92,7 @@ main/app_main.c        # 启动顺序：NVS→cfg→设备注册表→双网→T
 | GET/POST | `/api/screen` | 读取/设置屏幕显示掩码 `{"mask":N}` |
 | GET | `/api/screen/text` | 预览当前屏幕文本 |
 | GET | `/api/screen.bmp` | 下载当前 LCD 画面（BMP，24-bit） |
+| POST | `/api/screen/home` | 屏幕返回信息桌面（等效 BOOT 长按） |
 | POST | `/api/device?id=&value=0\|1` | 开关输出控制 |
 | GET | `/api/logs` / `/api/logs/<file>` | TF 日志列表/下载 |
 | GET/POST | `/api/config` | NVS 配置读取/保存 |
@@ -132,6 +133,8 @@ curl -X POST -H "Content-Type: application/json" \
 | 7 | 128 | 二维码页（`http://<当前IP>/`，与信息页每 10s 轮播） |
 
 信息页最多 8 行；开关过多自动截断。二维码页固定 10s，扫码可直接打开控制台。
+
+**BOOT 长按（≥2s）**：立即回到信息桌面，隐藏二维码页/通知，并暂停二维码轮播 10 分钟；Web 屏幕设置页也有「屏幕返回桌面」按钮。
 
 ---
 

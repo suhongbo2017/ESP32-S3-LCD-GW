@@ -27,6 +27,7 @@
 #include <time.h>
 
 #include "esp_log.h"
+#include "driver/gpio.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "device_registry.h"
@@ -92,6 +93,13 @@ static lv_obj_t *s_qr_label = NULL;
 static char       s_qr_url[64];
 static bool       s_show_qr = false;
 static int64_t    s_page_switch_us = 0;
+static int64_t    s_qr_paused_until_us = 0;
+
+#define BOOT_GPIO_NUM       0
+#define BOOT_LONG_PRESS_MS  2000
+#define BOOT_POLL_MS        50
+#define BOOT_TASK_STACK     2048
+#define BOOT_TASK_PRIO      3
 
 static ha_notify_t s_last_notify;       /*!< 最近通知（重建时恢复 banner） */
 static ha_sensor_t s_sensor;            /*!< MQTT 传感器数据（无自定义传感器时兜底） */
@@ -717,6 +725,47 @@ static void ui_hide_notify(void)
     ui_apply_visibility();
 }
 
+void ui_dashboard_show_home(void)
+{
+    if (!lvgl_port_lock(UI_LVGL_LOCK_TIMEOUT_MS)) {
+        return;
+    }
+    s_show_qr = false;
+    s_notify_active = false;
+    s_page_switch_us = esp_timer_get_time();
+    s_qr_paused_until_us = s_page_switch_us + 10LL * 60 * 1000 * 1000;
+    ui_apply_visibility();
+    lvgl_port_unlock();
+    ESP_LOGI(TAG, "返回信息桌面（二维码轮播暂停 10 分钟）");
+}
+
+/** BOOT 长按检测（GPIO0 低电平有效） */
+static void boot_button_task(void *arg)
+{
+    (void)arg;
+    bool pressed = false;
+    bool fired = false;
+    int64_t press_us = 0;
+
+    for (;;) {
+        int level = gpio_get_level(BOOT_GPIO_NUM);
+        int64_t now = esp_timer_get_time();
+        if (level == 0) {
+            if (!pressed) {
+                pressed = true;
+                fired = false;
+                press_us = now;
+            } else if (!fired && now - press_us >= (int64_t)BOOT_LONG_PRESS_MS * 1000) {
+                fired = true;
+                ui_dashboard_show_home();
+            }
+        } else {
+            pressed = false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(BOOT_POLL_MS));
+    }
+}
+
 /* ---------------------------------------------------------------------------
  * 数据源 3：MQTT 传感器温湿度（作为自定义传感器缺失时的兜底）
  * ------------------------------------------------------------------------- */
@@ -770,7 +819,8 @@ static void ui_refresh_task(void *arg)
         ui_refresh(&st, false);
 
         /* 二维码页与信息页每 10s 轮播 */
-        if ((s_items & UI_SCREEN_QR) && !s_notify_active) {
+        if ((s_items & UI_SCREEN_QR) && !s_notify_active &&
+            esp_timer_get_time() >= s_qr_paused_until_us) {
             int64_t now = esp_timer_get_time();
             if (s_page_switch_us == 0) {
                 s_page_switch_us = now;
@@ -964,6 +1014,18 @@ esp_err_t ui_dashboard_init(void)
     /* 6) 注册链路切换监听器（上行变化即时刷新）+ 周期刷新任务 */
     net_manager_register_listener(ui_net_listener, NULL);
     xTaskCreate(ui_refresh_task, "ui_refresh", UI_TASK_STACK, NULL, UI_TASK_PRIO, &s_task);
+
+    /* 6.1) BOOT 长按：返回信息桌面 */
+    gpio_config_t boot_cfg = {
+        .pin_bit_mask = 1ULL << BOOT_GPIO_NUM,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&boot_cfg);
+    xTaskCreate(boot_button_task, "boot_btn", BOOT_TASK_STACK, NULL,
+                BOOT_TASK_PRIO, NULL);
 
     /* 7) 注册 HA 通知处理器（ha_mqtt 投递任务上下文调用，内部加 LVGL 锁） */
     ha_mqtt_register_notify_handler(ui_ha_notify_handler, NULL);

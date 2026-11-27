@@ -54,6 +54,9 @@ esp_err_t ui_dashboard_set_items(uint32_t mask);
 /** @brief 取当前屏幕文本内容（诊断/预览用，非 LVGL 操作） */
 esp_err_t ui_dashboard_get_text(char *buf, size_t size);
 
+/** @brief 返回信息桌面（隐藏二维码页/通知，并暂停二维码轮播 10 分钟） */
+void ui_dashboard_show_home(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -196,7 +196,10 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
           <label class="chk"><input type="checkbox" id="scr_uptime"> 运行时长</label>
           <label class="chk"><input type="checkbox" id="scr_qr"> 二维码</label>
         </div>
-        <div class="row"><button class="pri" onclick="screenSave()">保存屏幕设置</button></div>
+        <div class="row">
+          <button class="pri" onclick="screenSave()">保存屏幕设置</button>
+          <button class="sec" onclick="screenHome()">屏幕返回桌面</button>
+        </div>
         <div class="msg">修改后 1 秒内生效；最多 8 行，开关较多时自动截断</div>
       </div>
     </section>
@@ -527,6 +530,12 @@ async function screenLoad(){
       $(id).checked = !!(j.mask & bit);
     }
   }catch(e){}
+}
+async function screenHome(){
+  try{
+    const j = await (await api('/api/screen/home', {method:'POST'})).json();
+    $('smsg').textContent = j.ok ? '已返回桌面' : '失败';
+  }catch(e){ $('smsg').textContent = '失败: ' + e; }
 }
 async function screenSave(){
   let mask = 0;

@@ -632,7 +632,7 @@ CONFIG_LCD_ST7735_SPI_CLK_HZ = 40000000；RES = 128x160；TEST_PATTERN = n
 | mDNS 组件 | **`espressif/mdns`（组件仓库）** | ⚠️ IDF v5.x 已把 mdns 移出内核，必须用 `idf_component.yml` 声明 |
 | 鉴权 | **无 Token**（已移除） | 页面与所有 `/api/*` 可直接访问；仅限可信局域网，禁止暴露公网 |
 | GPIO 白名单 | **GPIO1–9 / 39–42 / 47–48** | 板载占用（0/10–21/26–38/43–46）在 GPIO 页作为说明窗展示，不可定义 |
-| 屏幕显示 | Web「设置与升级 → 屏幕显示」勾选 | 温湿度、开关状态、IP、日期时间、上行链路、ETH/WiFi、运行时长、二维码；NVS 保存 |
+| 屏幕显示 | Web「设置与升级 → 屏幕显示」勾选 | 温湿度、开关状态、IP、日期时间、上行链路、ETH/WiFi、运行时长、二维码；BOOT 长按 2s 回到桌面 |
 | 设备类型 | 开关 / 温湿度 / 光照 / 声音 | SHT31、SHT4x（I2C 0x44）；BH1750（I2C 0x23）；DHT22（单总线）；声音用 ADC1（mV） |
 | I2C 总线 | 默认 **SDA=GPIO47 / SCL=GPIO48**（Web 可改） | 100kHz，内部上拉；SHT31/4x 0x44，BH1750 0x23；可扫描地址 |
 | 模拟输入 | **仅 ADC1 = GPIO1–9** | ADC2（GPIO11–20）在 WiFi 下不可用；声音模块输出接任意 ADC1 脚 |
