@@ -94,6 +94,7 @@ static char       s_qr_url[64];
 static bool       s_show_qr = false;
 static int64_t    s_page_switch_us = 0;
 static int64_t    s_qr_paused_until_us = 0;
+static bool       s_qr_manual = false;
 
 #define BOOT_GPIO_NUM       0
 #define BOOT_LONG_PRESS_MS  2000
@@ -349,7 +350,7 @@ static bool layout_matches(void)
 /** 按当前页面/通知状态显示内容区或二维码页 */
 static void ui_apply_visibility(void)
 {
-    bool show_qr = s_show_qr && (s_items & UI_SCREEN_QR) && !s_notify_active;
+    bool show_qr = s_show_qr && !s_notify_active;
     if (s_content != NULL) {
         if (s_notify_active || show_qr) {
             lv_obj_add_flag(s_content, LV_OBJ_FLAG_HIDDEN);
@@ -616,7 +617,7 @@ static void ui_rebuild(const net_manager_status_t *st)
 
     /* 二维码页（与信息页轮播；由 ui_apply_visibility 控制显隐） */
 #if defined(CONFIG_LV_USE_QRCODE)
-    if (s_items & UI_SCREEN_QR) {
+    {
         s_qr_content = lv_obj_create(scr);
         lv_obj_set_size(s_qr_content, UI_W, UI_H);
         lv_obj_set_pos(s_qr_content, 0, 0);
@@ -731,12 +732,35 @@ void ui_dashboard_show_home(void)
         return;
     }
     s_show_qr = false;
+    s_qr_manual = false;
     s_notify_active = false;
     s_page_switch_us = esp_timer_get_time();
     s_qr_paused_until_us = s_page_switch_us + 10LL * 60 * 1000 * 1000;
     ui_apply_visibility();
     lvgl_port_unlock();
     ESP_LOGI(TAG, "返回信息桌面（二维码轮播暂停 10 分钟）");
+}
+
+void ui_dashboard_show_qr(void)
+{
+    if (!lvgl_port_lock(UI_LVGL_LOCK_TIMEOUT_MS)) {
+        return;
+    }
+    s_notify_active = false;
+    s_show_qr = true;
+    s_qr_manual = true;
+    ui_apply_visibility();
+    lvgl_port_unlock();
+    ESP_LOGI(TAG, "显示二维码页");
+}
+
+void ui_dashboard_toggle_qr(void)
+{
+    if (s_show_qr) {
+        ui_dashboard_show_home();
+    } else {
+        ui_dashboard_show_qr();
+    }
 }
 
 /** BOOT 长按检测（GPIO0 低电平有效） */
@@ -759,8 +783,12 @@ static void boot_button_task(void *arg)
                 fired = true;
                 ui_dashboard_show_home();
             }
-        } else {
+        } else if (pressed) {
+            int64_t held = now - press_us;
             pressed = false;
+            if (!fired && held >= 50 * 1000 && held < (int64_t)BOOT_LONG_PRESS_MS * 1000) {
+                ui_dashboard_toggle_qr();   /* 短按：二维码页/桌面切换 */
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(BOOT_POLL_MS));
     }
@@ -819,7 +847,7 @@ static void ui_refresh_task(void *arg)
         ui_refresh(&st, false);
 
         /* 二维码页与信息页每 10s 轮播 */
-        if ((s_items & UI_SCREEN_QR) && !s_notify_active &&
+        if ((s_items & UI_SCREEN_QR) && !s_notify_active && !s_qr_manual &&
             esp_timer_get_time() >= s_qr_paused_until_us) {
             int64_t now = esp_timer_get_time();
             if (s_page_switch_us == 0) {
@@ -889,9 +917,6 @@ uint32_t ui_dashboard_get_items(void)
 esp_err_t ui_dashboard_set_items(uint32_t mask)
 {
     s_items = mask & UI_SCREEN_ALL;
-    if (!(s_items & UI_SCREEN_QR)) {
-        s_show_qr = false;
-    }
     s_need_rebuild = true;
     nvs_handle_t h;
     if (nvs_open(UI_ITEMS_NS, NVS_READWRITE, &h) == ESP_OK) {

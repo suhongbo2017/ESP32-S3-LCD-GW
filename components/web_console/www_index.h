@@ -198,6 +198,7 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
         </div>
         <div class="row">
           <button class="pri" onclick="screenSave()">保存屏幕设置</button>
+          <button class="sec" onclick="screenQr()">显示二维码</button>
           <button class="sec" onclick="screenHome()">屏幕返回桌面</button>
         </div>
         <div class="msg">修改后 1 秒内生效；最多 8 行，开关较多时自动截断</div>
@@ -530,6 +531,12 @@ async function screenLoad(){
       $(id).checked = !!(j.mask & bit);
     }
   }catch(e){}
+}
+async function screenQr(){
+  try{
+    const j = await (await api('/api/screen/qr', {method:'POST'})).json();
+    $('smsg').textContent = j.ok ? '二维码已显示' : '失败';
+  }catch(e){ $('smsg').textContent = '失败: ' + e; }
 }
 async function screenHome(){
   try{

@@ -57,6 +57,12 @@ esp_err_t ui_dashboard_get_text(char *buf, size_t size);
 /** @brief 返回信息桌面（隐藏二维码页/通知，并暂停二维码轮播 10 分钟） */
 void ui_dashboard_show_home(void);
 
+/** @brief 立即显示二维码页（手动显示期间不自动轮播） */
+void ui_dashboard_show_qr(void);
+
+/** @brief 二维码页/桌面切换（BOOT 短按、Web 按钮） */
+void ui_dashboard_toggle_qr(void);
+
 #ifdef __cplusplus
 }
 #endif

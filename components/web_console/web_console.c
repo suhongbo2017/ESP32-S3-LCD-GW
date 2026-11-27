@@ -418,6 +418,16 @@ static esp_err_t h_screen_get(httpd_req_t *req)
     return send_json(req, o);
 }
 
+/** POST /api/screen/qr —— 立即显示二维码页 */
+static esp_err_t h_screen_qr(httpd_req_t *req)
+{
+    ha_mqtt_set_http_stage("screen_qr");
+    ui_dashboard_show_qr();
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    return send_json(req, o);
+}
+
 /** POST /api/screen/home —— 返回信息桌面（等效 BOOT 长按） */
 static esp_err_t h_screen_home(httpd_req_t *req)
 {
@@ -950,6 +960,7 @@ esp_err_t web_console_init(void)
         { .uri = "/api/screen/text", .method = HTTP_GET,  .handler = h_screen_text },
         { .uri = "/api/screen.bmp",  .method = HTTP_GET,  .handler = h_screen_bmp },
         { .uri = "/api/screen/home", .method = HTTP_POST, .handler = h_screen_home },
+        { .uri = "/api/screen/qr",   .method = HTTP_POST, .handler = h_screen_qr },
         { .uri = "/api/screen",      .method = HTTP_POST, .handler = h_screen_post },
         { .uri = "/api/device",      .method = HTTP_POST, .handler = h_device_set },
         { .uri = "/api/logs",        .method = HTTP_GET,  .handler = h_logs_list },
