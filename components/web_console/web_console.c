@@ -112,6 +112,14 @@ static esp_err_t h_status(httpd_req_t *req)
     bool stale = (sn.rx_us == 0) ||
                  ((esp_timer_get_time() - sn.rx_us) >
                   (int64_t)CONFIG_HA_MQTT_SENSOR_STALE_MS * 1000);
+    float local_t = 0, local_h = 0;
+    bool local_ok = device_get_temp_hum(&local_t, &local_h);
+    if (local_ok) {
+        sn.temp = local_t;
+        sn.hum = local_h;
+        sn.rx_us = esp_timer_get_time();
+        stale = false;
+    }
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
@@ -447,6 +455,56 @@ static esp_err_t h_screen_post(httpd_req_t *req)
     cJSON_AddBoolToObject(o, "ok", true);
     cJSON_AddNumberToObject(o, "mask", (double)ui_dashboard_get_items());
     return send_json(req, o);
+}
+
+/** GET /api/screen.bmp —— 当前 LCD 画面（24-bit BMP，便于排障/预览） */
+static esp_err_t h_screen_bmp(httpd_req_t *req)
+{
+    ha_mqtt_set_http_stage("screen_bmp");
+    int w = 0, h = 0, stride = 0;
+    uint8_t *fb = ui_dashboard_copy_framebuffer(&w, &h, &stride);
+    if (fb == NULL || w <= 0 || h <= 0) {
+        free(fb);
+        return send_err_json(req, "no_fb", "画面不可用");
+    }
+    int row = (w * 3 + 3) & ~3;
+    size_t size = 54 + (size_t)row * h;
+    uint8_t *bmp = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if (bmp == NULL) {
+        free(fb);
+        return send_err_json(req, "no_mem", "内存不足");
+    }
+    memset(bmp, 0, 54);
+    bmp[0] = 'B'; bmp[1] = 'M';
+    bmp[2] = (uint8_t)size; bmp[3] = (uint8_t)(size >> 8);
+    bmp[4] = (uint8_t)(size >> 16); bmp[5] = (uint8_t)(size >> 24);
+    bmp[10] = 54;
+    bmp[14] = 40;
+    bmp[18] = (uint8_t)w; bmp[19] = (uint8_t)(w >> 8);
+    bmp[20] = (uint8_t)(w >> 16); bmp[21] = (uint8_t)(w >> 24);
+    bmp[22] = (uint8_t)h; bmp[23] = (uint8_t)(h >> 8);
+    bmp[24] = (uint8_t)(h >> 16); bmp[25] = (uint8_t)(h >> 24);
+    bmp[26] = 1;
+    bmp[28] = 24;
+    bmp[34] = (uint8_t)(row * h); bmp[35] = (uint8_t)((row * h) >> 8);
+    bmp[36] = (uint8_t)((row * h) >> 16); bmp[37] = (uint8_t)((row * h) >> 24);
+
+    for (int y = 0; y < h; y++) {
+        uint8_t *dst = bmp + 54 + (size_t)(h - 1 - y) * row;
+        const uint16_t *src = (const uint16_t *)(fb + (size_t)y * stride);
+        for (int x = 0; x < w; x++) {
+            uint16_t v = src[x];
+            v = (uint16_t)((v >> 8) | (v << 8));   /* LVGL 缓冲为字节交换格式 */
+            dst[x * 3 + 0] = (uint8_t)(((v & 0x1F) * 255) / 31);
+            dst[x * 3 + 1] = (uint8_t)((((v >> 5) & 0x3F) * 255) / 63);
+            dst[x * 3 + 2] = (uint8_t)((((v >> 11) & 0x1F) * 255) / 31);
+        }
+    }
+    free(fb);
+    httpd_resp_set_type(req, "image/bmp");
+    esp_err_t r = httpd_resp_send(req, (const char *)bmp, (ssize_t)size);
+    free(bmp);
+    return r;
 }
 
 /** POST /api/gpio/scan —— 扫描 I2C 总线 */
@@ -880,6 +938,7 @@ esp_err_t web_console_init(void)
         { .uri = "/api/gpio/dht_test", .method = HTTP_POST, .handler = h_gpio_dht_test },
         { .uri = "/api/screen",      .method = HTTP_GET,  .handler = h_screen_get },
         { .uri = "/api/screen/text", .method = HTTP_GET,  .handler = h_screen_text },
+        { .uri = "/api/screen.bmp",  .method = HTTP_GET,  .handler = h_screen_bmp },
         { .uri = "/api/screen",      .method = HTTP_POST, .handler = h_screen_post },
         { .uri = "/api/device",      .method = HTTP_POST, .handler = h_device_set },
         { .uri = "/api/logs",        .method = HTTP_GET,  .handler = h_logs_list },

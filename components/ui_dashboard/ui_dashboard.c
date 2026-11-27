@@ -71,12 +71,32 @@ static bool       s_notify_active = false;/*!< 当前是否处于通知显示期
 static uint64_t   s_notify_until_us = 0;  /*!< 通知恢复截止时刻（esp_timer） */
 
 /* LVGL 控件句柄 */
-static lv_obj_t *s_lbl_body = NULL;     /*!< 可配置内容区（多行文本） */
+static lv_obj_t *s_content = NULL;      /*!< 常规内容容器（通知横幅出现时整体隐藏） */
+static lv_obj_t *s_lbl_clock = NULL;    /*!< 顶栏右侧时间/链路 */
+static lv_obj_t *s_lbl_t_val = NULL;    /*!< 温度数值 */
+static lv_obj_t *s_lbl_h_val = NULL;    /*!< 湿度数值 */
+static lv_obj_t *s_sw_row[3] = { 0 };   /*!< 开关行 */
+static lv_obj_t *s_sw_led[3] = { 0 };   /*!< 开关状态灯 */
+static lv_obj_t *s_sw_name[3] = { 0 };
+static lv_obj_t *s_sw_state[3] = { 0 };
+static char       s_sw_id[3][16];       /*!< 当前显示的开关 id */
+static int        s_sw_shown = 0;
+static lv_obj_t *s_info_lbl[5] = { 0 }; /*!< 底部信息行 */
+static int        s_info_kind[5];       /*!< 0=IP 1=上行 2=链路 3=运行 4=日期 */
+static int        s_info_n = 0;
+
+static ha_notify_t s_last_notify;       /*!< 最近通知（重建时恢复 banner） */
 static ha_sensor_t s_sensor;            /*!< MQTT 传感器数据（无自定义传感器时兜底） */
 static bool s_sensor_has   = false;
 static lv_display_t *s_disp = NULL;     /*!< LVGL 显示设备（供截图使用） */
 
 static uint64_t s_boot_us = 0;          /*!< 启动时刻（esp_timer 单调时钟） */
+
+static bool     s_need_rebuild = true;
+static uint32_t s_cache_mask = 0xFFFFFFFF;
+static int      s_cache_n = 0;
+static char     s_cache_id[8][16];
+static char     s_cache_name[8][DEVICE_NAME_MAX];
 
 #define UI_ITEMS_NS   "uiscreen"
 #define UI_BODY_LINES 8
@@ -240,13 +260,336 @@ static void compose_body(char *out, size_t n, const net_manager_status_t *st)
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * 结构化布局：顶栏 / 温湿度卡片 / 开关列表 / 信息行
+ * （128x160；所有函数须在持 LVGL 锁时调用）
+ * ------------------------------------------------------------------------- */
+
+static lv_obj_t *ui_panel(lv_obj_t *parent, int x, int y, int w, int h,
+                          uint32_t bg, int radius)
+{
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_pos(o, x, y);
+    lv_obj_set_style_bg_color(o, lv_color_hex(bg), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(o, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(o, radius, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(o, 0, LV_PART_MAIN);
+    lv_obj_set_scrollbar_mode(o, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    return o;
+}
+
+static lv_obj_t *ui_label(lv_obj_t *parent, int x, int y, const lv_font_t *font,
+                          uint32_t color, const char *text)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_obj_set_pos(l, x, y);
+    lv_obj_set_style_text_font(l, font, LV_PART_MAIN);
+    lv_obj_set_style_text_color(l, lv_color_hex(color), LV_PART_MAIN);
+    lv_label_set_text(l, text);
+    return l;
+}
+
+static int collect_out_cache(void)
+{
+    int n = 0;
+    for (int i = 0; i < device_count() && n < 8; i++) {
+        const device_t *d = device_at(i);
+        if (d == NULL || d->kind != DEV_OUT) {
+            continue;
+        }
+        snprintf(s_cache_id[n], sizeof(s_cache_id[0]), "%s", d->id);
+        snprintf(s_cache_name[n], sizeof(s_cache_name[0]), "%s", d->name);
+        n++;
+    }
+    s_cache_n = n;
+    s_cache_mask = s_items;
+    return n;
+}
+
+static bool layout_matches(void)
+{
+    if (s_need_rebuild || s_cache_mask != s_items) {
+        return false;
+    }
+    int n = 0;
+    for (int i = 0; i < device_count() && n < 8; i++) {
+        const device_t *d = device_at(i);
+        if (d == NULL || d->kind != DEV_OUT) {
+            continue;
+        }
+        if (n >= s_cache_n ||
+            strcmp(s_cache_id[n], d->id) != 0 ||
+            strcmp(s_cache_name[n], d->name) != 0) {
+            return false;
+        }
+        n++;
+    }
+    return n == s_cache_n;
+}
+
+/** 更新数值/状态（不重建控件） */
+static void ui_update_values(const net_manager_status_t *st)
+{
+    char buf[48];
+
+    if (s_lbl_clock != NULL) {
+        if (s_items & UI_SCREEN_DATETIME) {
+            time_t now = time(NULL);
+            struct tm tm;
+            if (now > 1700000000 && localtime_r(&now, &tm) != NULL) {
+                snprintf(buf, sizeof(buf), "%02d:%02d", tm.tm_hour, tm.tm_min);
+            } else {
+                snprintf(buf, sizeof(buf), "--:--");
+            }
+        } else {
+            snprintf(buf, sizeof(buf), "%s", net_manager_backend_name(st->active));
+        }
+        lv_label_set_text(s_lbl_clock, buf);
+    }
+
+    if (s_lbl_t_val != NULL) {
+        float t, h;
+        if (latest_temp_hum(&t, &h)) {
+            snprintf(buf, sizeof(buf), "%.1f", t);
+            lv_label_set_text(s_lbl_t_val, buf);
+            snprintf(buf, sizeof(buf), "%.1f", h);
+            lv_label_set_text(s_lbl_h_val, buf);
+            lv_obj_set_style_text_color(s_lbl_t_val, lv_color_hex(0x69F0AE), LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_lbl_h_val, lv_color_hex(0x4FC3F7), LV_PART_MAIN);
+        } else {
+            lv_label_set_text(s_lbl_t_val, "--");
+            lv_label_set_text(s_lbl_h_val, "--");
+            lv_obj_set_style_text_color(s_lbl_t_val, lv_color_hex(0x607D8B), LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_lbl_h_val, lv_color_hex(0x607D8B), LV_PART_MAIN);
+        }
+    }
+
+    for (int i = 0; i < s_sw_shown; i++) {
+        const device_t *d = device_find(s_sw_id[i]);
+        if (d == NULL) {
+            lv_label_set_text(s_sw_state[i], "--");
+            continue;
+        }
+        lv_label_set_text(s_sw_state[i], d->on ? "开" : "关");
+        lv_obj_set_style_text_color(s_sw_state[i],
+            lv_color_hex(d->on ? 0x69F0AE : 0xEF5350), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_sw_led[i],
+            lv_color_hex(d->on ? 0x00E676 : 0xE53935), LV_PART_MAIN);
+    }
+
+    for (int i = 0; i < s_info_n; i++) {
+        switch (s_info_kind[i]) {
+        case 0:
+            snprintf(buf, sizeof(buf), "IP %s", st->active_ip[0] ? st->active_ip : "-");
+            break;
+        case 1:
+            snprintf(buf, sizeof(buf), "上行 %s", net_manager_backend_name(st->active));
+            break;
+        case 2:
+            snprintf(buf, sizeof(buf), "ETH %s  WiFi %s",
+                     st->eth_ready ? "OK" : "--", st->wifi_ready ? "OK" : "--");
+            break;
+        case 3: {
+            uint64_t sec = (esp_timer_get_time() - s_boot_us) / 1000000ULL;
+            snprintf(buf, sizeof(buf), "运行 %02llu:%02llu:%02llu",
+                     sec / 3600, (sec % 3600) / 60, sec % 60);
+            break;
+        }
+        default: {
+            time_t now = time(NULL);
+            struct tm tm;
+            if (now > 1700000000 && localtime_r(&now, &tm) != NULL) {
+                snprintf(buf, sizeof(buf), "%04d-%02d-%02d",
+                         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+            } else {
+                snprintf(buf, sizeof(buf), "---- -- --");
+            }
+            break;
+        }
+        }
+        lv_label_set_text(s_info_lbl[i], buf);
+    }
+}
+
+/** 重建整个看板（配置/设备列表变化时） */
+static void ui_rebuild(const net_manager_status_t *st)
+{
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_clean(scr);
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x060B14), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(scr, 0, LV_PART_MAIN);
+
+    memset(s_info_lbl, 0, sizeof(s_info_lbl));
+    memset(s_sw_row, 0, sizeof(s_sw_row));
+    memset(s_sw_led, 0, sizeof(s_sw_led));
+    memset(s_sw_name, 0, sizeof(s_sw_name));
+    memset(s_sw_state, 0, sizeof(s_sw_state));
+    s_info_n = 0;
+    s_sw_shown = 0;
+    s_lbl_clock = s_lbl_t_val = s_lbl_h_val = NULL;
+
+    s_content = lv_obj_create(scr);
+    lv_obj_set_size(s_content, UI_W, UI_H);
+    lv_obj_set_pos(s_content, 0, 0);
+    lv_obj_set_style_bg_opa(s_content, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_content, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_content, 0, LV_PART_MAIN);
+    lv_obj_set_scrollbar_mode(s_content, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_remove_flag(s_content, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* 顶栏 */
+    lv_obj_t *hdr = ui_panel(s_content, 0, 0, UI_W, 22, 0x0E1A2F, 0);
+    lv_obj_set_style_bg_grad_color(hdr, lv_color_hex(0x13233D), LV_PART_MAIN);
+    lv_obj_t *title = ui_label(s_content, 7, 3, &lv_font_cjk_14, 0x00E5FF, "双网网关");
+    (void)title;
+    s_lbl_clock = ui_label(s_content, 0, 4, &lv_font_montserrat_12, 0x9FB3C8, "--:--");
+    lv_obj_align(s_lbl_clock, LV_ALIGN_TOP_RIGHT, -7, 4);
+
+    int y = 26;
+
+    /* 温湿度卡片 */
+    if (s_items & UI_SCREEN_TEMP_HUM) {
+        lv_obj_t *ct = ui_panel(s_content, 4, y, 58, 48, 0x0E2422, 4);
+        lv_obj_t *ch = ui_panel(s_content, 66, y, 58, 48, 0x0D1E30, 4);
+        lv_obj_set_style_border_side(ct, LV_BORDER_SIDE_LEFT, LV_PART_MAIN);
+        lv_obj_set_style_border_width(ct, 3, LV_PART_MAIN);
+        lv_obj_set_style_border_color(ct, lv_color_hex(0x00E676), LV_PART_MAIN);
+        lv_obj_set_style_border_side(ch, LV_BORDER_SIDE_LEFT, LV_PART_MAIN);
+        lv_obj_set_style_border_width(ch, 3, LV_PART_MAIN);
+        lv_obj_set_style_border_color(ch, lv_color_hex(0x29B6F6), LV_PART_MAIN);
+        ui_label(ct, 8, 2, &lv_font_cjk_14, 0x78909C, "温度");
+        ui_label(ch, 8, 2, &lv_font_cjk_14, 0x78909C, "湿度");
+        s_lbl_t_val = ui_label(ct, 8, 19, &lv_font_montserrat_16, 0x69F0AE, "--");
+        s_lbl_h_val = ui_label(ch, 8, 19, &lv_font_montserrat_16, 0x4FC3F7, "--");
+        ui_label(ct, 44, 24, &lv_font_cjk_14, 0x78909C, "℃");
+        ui_label(ch, 44, 24, &lv_font_cjk_14, 0x78909C, "%");
+        y += 48 + 4;
+    }
+
+    /* 开关列表：优先占用可用空间 */
+    int total_sw = 0;
+    if (s_items & UI_SCREEN_SWITCHES) {
+        for (int i = 0; i < device_count(); i++) {
+            const device_t *d = device_at(i);
+            if (d != NULL && d->kind == DEV_OUT) {
+                total_sw++;
+            }
+        }
+    }
+    int slots = total_sw > 3 ? 3 : total_sw;
+    int avail = 158 - y;
+    int info_room = avail - (slots > 0 ? 14 : 0) - slots * 17;
+    while (slots > 0 && info_room < 0) {
+        slots--;
+        info_room = avail - (slots > 0 ? 14 : 0) - slots * 17;
+    }
+    if (info_room < 0) {
+        info_room = 0;
+    }
+    int info_max = info_room / 16;
+    if (info_max > 5) {
+        info_max = 5;
+    }
+
+    if (slots > 0) {
+        char head[24];
+        if (total_sw > slots) {
+            snprintf(head, sizeof(head), "开关 +%d", total_sw - slots);
+        } else {
+            snprintf(head, sizeof(head), "开关");
+        }
+        ui_label(s_content, 7, y, &lv_font_cjk_14, 0x78909C, head);
+        y += 14;
+        int n = 0;
+        for (int i = 0; i < device_count() && n < slots; i++) {
+            const device_t *d = device_at(i);
+            if (d == NULL || d->kind != DEV_OUT) {
+                continue;
+            }
+            lv_obj_t *row = ui_panel(s_content, 6, y + n * 17, 116, 16, 0x121B2B, 3);
+            s_sw_row[n] = row;
+            s_sw_led[n] = lv_obj_create(row);
+            lv_obj_set_size(s_sw_led[n], 6, 6);
+            lv_obj_set_pos(s_sw_led[n], 5, 5);
+            lv_obj_set_style_radius(s_sw_led[n], 3, LV_PART_MAIN);
+            lv_obj_set_style_border_width(s_sw_led[n], 0, LV_PART_MAIN);
+            lv_obj_set_style_bg_color(s_sw_led[n], lv_color_hex(0x546E7A), LV_PART_MAIN);
+            lv_obj_remove_flag(s_sw_led[n], LV_OBJ_FLAG_SCROLLABLE);
+
+            char name[20];
+            utf8_copy(name, sizeof(name), d->name, 18);
+            s_sw_name[n] = ui_label(row, 14, 0, &lv_font_cjk_14, 0xE0E0E0, name);
+            lv_obj_set_width(s_sw_name[n], 74);
+            s_sw_state[n] = ui_label(row, 0, 0, &lv_font_cjk_14, 0xEF5350, "关");
+            lv_obj_align(s_sw_state[n], LV_ALIGN_RIGHT_MID, -5, 0);
+            snprintf(s_sw_id[n], sizeof(s_sw_id[n]), "%s", d->id);
+            n++;
+        }
+        s_sw_shown = n;
+        y += slots * 17;
+    }
+
+    /* 信息行：IP / 上行 / 链路 / 运行 / 日期 */
+    int kinds[5];
+    int kn = 0;
+    if (s_items & UI_SCREEN_IP)       kinds[kn++] = 0;
+    if (s_items & UI_SCREEN_DATETIME) kinds[kn++] = 4;
+    if (s_items & UI_SCREEN_UPTIME)   kinds[kn++] = 3;
+    if (s_items & UI_SCREEN_UPLINK)   kinds[kn++] = 1;
+    if (s_items & UI_SCREEN_LINK)     kinds[kn++] = 2;
+
+    int info_n = kn < info_max ? kn : info_max;
+    for (int i = 0; i < info_n; i++) {
+        s_info_kind[i] = kinds[i];
+        s_info_lbl[i] = ui_label(s_content, 7, y + i * 16, &lv_font_cjk_14, 0xB0BEC5, "");
+        lv_obj_set_width(s_info_lbl[i], 116);
+    }
+    s_info_n = info_n;
+
+    /* HA 通知 banner（最后创建，位于顶层） */
+    s_notify_panel = lv_obj_create(scr);
+    lv_obj_set_size(s_notify_panel, 116, 110);
+    lv_obj_set_pos(s_notify_panel, 6, 24);
+    lv_obj_set_style_bg_color(s_notify_panel, lv_color_hex(0x1A0F12), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_notify_panel, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_side(s_notify_panel, LV_BORDER_SIDE_LEFT, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_notify_panel, 4, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_notify_panel, lv_color_hex(0x4FC3F7), LV_PART_MAIN);
+    lv_obj_set_style_radius(s_notify_panel, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_notify_panel, 6, LV_PART_MAIN);
+    lv_obj_add_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
+
+    s_notify_title = ui_label(s_notify_panel, 8, 4, &lv_font_cjk_14, 0x4FC3F7, "HA NOTIFY");
+    s_notify_msg = ui_label(s_notify_panel, 8, 30, &lv_font_cjk_14, 0xFFFFFF, "-");
+    lv_obj_set_width(s_notify_msg, 92);
+    lv_label_set_long_mode(s_notify_msg, LV_LABEL_LONG_WRAP);
+
+    collect_out_cache();
+    s_need_rebuild = false;
+
+    if (s_notify_active) {
+        lv_obj_add_flag(s_content, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(s_notify_title, s_last_notify.title[0] ? s_last_notify.title : "HA NOTIFY");
+        lv_label_set_text(s_notify_msg, s_last_notify.message[0] ? s_last_notify.message : "-");
+    }
+
+    ui_update_values(st);
+}
+
 /** 刷新看板内容（必须在持 LVGL 锁的情况下调用） */
 static void ui_refresh(const net_manager_status_t *st, bool uptime_only)
 {
     (void)uptime_only;
-    char body[512];
-    compose_body(body, sizeof(body), st);
-    lv_label_set_text(s_lbl_body, body);
+    if (!layout_matches()) {
+        ui_rebuild(st);
+    } else {
+        ui_update_values(st);
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -270,9 +613,12 @@ static void ui_show_notify(const ha_notify_t *n)
     lv_obj_set_style_text_color(s_notify_title, lv_color_hex(c), LV_PART_MAIN);
     lv_label_set_text(s_notify_title, n->title[0] ? n->title : "HA NOTIFY");
     lv_label_set_text(s_notify_msg, n->message[0] ? n->message : "-");
+    s_last_notify = *n;
 
     /* 隐藏常规内容，显示 banner */
-    lv_obj_add_flag(s_lbl_body, LV_OBJ_FLAG_HIDDEN);
+    if (s_content != NULL) {
+        lv_obj_add_flag(s_content, LV_OBJ_FLAG_HIDDEN);
+    }
     lv_obj_remove_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
 
     s_notify_active   = true;
@@ -285,7 +631,9 @@ static void ui_show_notify(const ha_notify_t *n)
 static void ui_hide_notify(void)
 {
     lv_obj_add_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_lbl_body, LV_OBJ_FLAG_HIDDEN);
+    if (s_content != NULL) {
+        lv_obj_remove_flag(s_content, LV_OBJ_FLAG_HIDDEN);
+    }
     s_notify_active = false;
 }
 
@@ -351,68 +699,6 @@ static void ui_refresh_task(void *arg)
 }
 
 /* ---------------------------------------------------------------------------
- * 看板控件（须在持 LVGL 锁的情况下调用）
- *
- * 布局说明：128x160 全屏直接排布，正文统一 12px（LV_FONT_MONTSERRAT_12），
- *   行距 18px，左右边距 6px，保证内容完整落在屏内、不溢出不裁切；
- *   每个信息行设宽度 + WRAP 换行，作为极端长文本（如 IP）的防溢出保险。
- * ------------------------------------------------------------------------- */
-static void ui_create_widgets(void)
-{
-    /* 屏幕背景 */
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
-
-    /* 标题（改用自建 CJK 字体，可直接显示中文；同时作为字体自检） */
-    lv_obj_t *title = lv_label_create(scr);
-    lv_obj_set_style_text_color(title, lv_color_hex(0x00E5FF), LV_PART_MAIN);
-    lv_obj_set_style_text_font(title, &lv_font_cjk_14, LV_PART_MAIN);
-    lv_label_set_text(title, "双网网关");
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 2);
-
-    /* 正文排版参数：全部用 12px，行高间距 18px，内容区宽 116 */
-    const int X  = 6;              /* 左右边距 */
-    const int W  = UI_W - 2 * X;   /* 内容可用宽度（116） */
-    const int Y1 = 26;             /* 第一行 y */
-    const int DY = 18;             /* 行距 */
-
-    s_lbl_body = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_body, &lv_font_cjk_14, LV_PART_MAIN);
-    lv_obj_set_style_text_color(s_lbl_body, lv_color_hex(0xE0E0E0), LV_PART_MAIN);
-    lv_obj_set_width(s_lbl_body, 116);
-    lv_label_set_long_mode(s_lbl_body, LV_LABEL_LONG_WRAP);
-    lv_obj_set_pos(s_lbl_body, 6, 24);
-    lv_label_set_text(s_lbl_body, "加载中…");
-
-    /* ---- HA 通知 banner（默认隐藏，覆盖 KPI 区 y=24..134，不碰标题/运行时长） ---- */
-    s_notify_panel = lv_obj_create(scr);
-    lv_obj_set_size(s_notify_panel, 116, 110);
-    lv_obj_set_pos(s_notify_panel, 6, 24);
-    lv_obj_set_style_bg_color(s_notify_panel, lv_color_hex(0x151515), LV_PART_MAIN);
-    lv_obj_set_style_border_side(s_notify_panel, LV_BORDER_SIDE_LEFT, LV_PART_MAIN);
-    lv_obj_set_style_border_width(s_notify_panel, 4, LV_PART_MAIN);
-    lv_obj_set_style_border_color(s_notify_panel, lv_color_hex(0x4FC3F7), LV_PART_MAIN);
-    lv_obj_set_style_pad_all(s_notify_panel, 6, LV_PART_MAIN);
-    lv_obj_add_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);   /* 初始隐藏 */
-
-    s_notify_title = lv_label_create(s_notify_panel);
-    /* 通知横幅用 CJK 字体：HA 推送常为中文，montserrat 会显示为方块。
-       （需 Kconfig 开启 CONFIG_LV_FONT_SOURCE_HAN_SANS_SC_14_CJK） */
-    lv_obj_set_style_text_font(s_notify_title, &lv_font_cjk_14, LV_PART_MAIN);
-    lv_obj_set_style_text_color(s_notify_title, lv_color_hex(0x4FC3F7), LV_PART_MAIN);
-    lv_obj_set_pos(s_notify_title, 8, 4);
-    lv_label_set_text(s_notify_title, "HA NOTIFY");
-
-    s_notify_msg = lv_label_create(s_notify_panel);
-    lv_obj_set_style_text_font(s_notify_msg, &lv_font_cjk_14, LV_PART_MAIN);
-    lv_obj_set_style_text_color(s_notify_msg, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_width(s_notify_msg, 92);
-    lv_label_set_long_mode(s_notify_msg, LV_LABEL_LONG_WRAP);   /* 多行 wrap */
-    lv_obj_set_pos(s_notify_msg, 8, 30);
-    lv_label_set_text(s_notify_msg, "-");
-}
-
-/* ---------------------------------------------------------------------------
  * HA 通知入口：由 ha_mqtt 投递任务调用（非 MQTT 回调），内部加 LVGL 锁
  * ------------------------------------------------------------------------- */
 static void ui_ha_notify_handler(const ha_notify_t *notify, void *user_ctx)
@@ -461,6 +747,7 @@ uint32_t ui_dashboard_get_items(void)
 esp_err_t ui_dashboard_set_items(uint32_t mask)
 {
     s_items = mask & UI_SCREEN_ALL;
+    s_need_rebuild = true;
     nvs_handle_t h;
     if (nvs_open(UI_ITEMS_NS, NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_u32(h, "mask", s_items);
@@ -576,8 +863,7 @@ esp_err_t ui_dashboard_init(void)
         ESP_LOGE(TAG, "LVGL 锁获取失败");
         return ESP_FAIL;
     }
-    ui_create_widgets();
-    ui_refresh(&st0, false);
+    ui_rebuild(&st0);
     lvgl_port_unlock();
 
     /* 6) 注册链路切换监听器（上行变化即时刷新）+ 周期刷新任务 */

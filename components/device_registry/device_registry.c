@@ -98,6 +98,24 @@ bool device_adc_pin_allowed(int pin)
     return pin >= 1 && pin <= 9;
 }
 
+bool device_get_temp_hum(float *temp, float *hum)
+{
+    if (temp == NULL || hum == NULL) {
+        return false;
+    }
+    for (int i = 0; i < s_count; i++) {
+        const device_t *d = &s_devs[i];
+        if (device_metric_count(d) >= 2 &&
+            strcmp(device_metric_key(d, 0), "temp") == 0 &&
+            d->valid[0] && d->valid[1]) {
+            *temp = d->value[0];
+            *hum = d->value[1];
+            return true;
+        }
+    }
+    return false;
+}
+
 int device_reserved_count(void)
 {
     return (int)(sizeof(s_reserved) / sizeof(s_reserved[0]));

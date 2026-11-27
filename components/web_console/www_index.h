@@ -101,6 +101,10 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
   .metric .mu{font-size:12px;color:var(--mut)}
   .metric .ma{font-size:11px;color:var(--mut);margin-left:auto}
   .metric .ma.stale{color:var(--warn)}
+  .logbox{max-height:280px;overflow:auto;border:1px solid var(--line);border-radius:4px;background:var(--panel)}
+  .logbox table{margin:0}
+  .logbox thead th{position:sticky;top:0;z-index:1;background:var(--deep)}
+  .logbox td,.logbox th{padding:7px 9px}
   .reslist{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:8px}
   .rescard{background:var(--deep);border:1px solid var(--line);border-radius:3px;padding:8px 10px;font-size:12px;color:var(--mut);overflow-wrap:anywhere}
   .rescard b{display:block;color:var(--fg);font-size:13px;margin-bottom:2px}
@@ -199,7 +203,9 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
     <section class="card pane full c-violet">
       <h2>TF 卡日志</h2>
       <div class="bd">
-        <table id="logs"><tbody><tr><td>加载中…</td></tr></tbody></table>
+        <div class="logbox">
+          <table id="logs"><tbody><tr><td>加载中…</td></tr></tbody></table>
+        </div>
       </div>
     </section>
 

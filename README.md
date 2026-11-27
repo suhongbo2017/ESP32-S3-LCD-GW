@@ -636,7 +636,7 @@ CONFIG_LCD_ST7735_SPI_CLK_HZ = 40000000；RES = 128x160；TEST_PATTERN = n
 | 设备类型 | 开关 / 温湿度 / 光照 / 声音 | SHT31、SHT4x（I2C 0x44）；BH1750（I2C 0x23）；DHT22（单总线）；声音用 ADC1（mV） |
 | I2C 总线 | 默认 **SDA=GPIO47 / SCL=GPIO48**（Web 可改） | 100kHz，内部上拉；SHT31/4x 0x44，BH1750 0x23；可扫描地址 |
 | 模拟输入 | **仅 ADC1 = GPIO1–9** | ADC2（GPIO11–20）在 WiFi 下不可用；声音模块输出接任意 ADC1 脚 |
-| 接口 | `/api/status` `/api/gpio` `/api/gpio/define` `/api/gpio/remove` `/api/gpio/bus` `/api/gpio/scan` `/api/device` `/api/screen` `/api/screen/text` `/api/history` `/api/logs` `/api/config` `/api/reboot` `/api/ota` | `POST /api/gpio/define`（JSON kind/model/pin/name/desc）、`POST /api/gpio/bus`、`POST /api/gpio/scan`、`POST /api/device?id=<id>&value=0|1` |
+| 接口 | `/api/status` `/api/gpio` `/api/gpio/define` `/api/gpio/remove` `/api/gpio/bus` `/api/gpio/scan` `/api/device` `/api/screen` `/api/screen/text` `/api/screen.bmp` `/api/history` `/api/logs` `/api/config` `/api/reboot` `/api/ota` | `POST /api/gpio/define`（JSON kind/model/pin/name/desc）、`POST /api/gpio/bus`、`POST /api/gpio/scan`、`POST /api/device?id=<id>&value=0|1` |
 | 温湿度曲线 | **SVG 双轴**（温度左轴/湿度右轴），240 条 ≈ 1 小时，纯前端无库 | 已取代屏幕截图功能 |
 | ~~屏幕截图~~ | **已移除** | 与 `/api/status` 数据重复，日常无价值 |
 

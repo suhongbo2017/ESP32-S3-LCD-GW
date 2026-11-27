@@ -326,9 +326,11 @@ static void status_task(void *arg)
         /* 传感器掉线告警：看板弹通知 + MQTT 告警（HA 可转发手机）+ TF 记录 */
         ha_sensor_t sn;
         ha_mqtt_get_last_sensor(&sn);
-        bool offline = (sn.rx_us == 0) ||
+        float lt = 0, lh = 0;
+        bool local_ok = device_get_temp_hum(&lt, &lh);
+        bool offline = !local_ok && ((sn.rx_us == 0) ||
                        ((esp_timer_get_time() - sn.rx_us) >
-                        (int64_t)CONFIG_HA_MQTT_SENSOR_ALERT_MS * 1000);
+                        (int64_t)CONFIG_HA_MQTT_SENSOR_ALERT_MS * 1000));
         if (offline && !s_sensor_alerted) {
             s_sensor_alerted = true;
             ESP_LOGW(TAG, "传感器掉线（超 %d ms 无数据）", CONFIG_HA_MQTT_SENSOR_ALERT_MS);

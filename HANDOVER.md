@@ -14,12 +14,12 @@
 | 构建 | ESP-IDF v5.5.5，`idf.py build` 通过；镜像 2,338,416 字节（3MB app 分区约余 25%） |
 | 网络 | 当前 WiFi 上行 `192.168.99.13`；ETH 驱动正常但现场未插网线 |
 | Web | 三页：信息 / 设置与升级 / GPIO 定义；无 Token 鉴权 |
-| 本地屏 | 内容可配置（温湿度、开关、IP、日期时间、上行、ETH/WiFi、运行时长） |
+| 本地屏 | 卡片式 UI：顶栏时钟、温湿度大卡、开关列表、信息行；内容可配置 |
 | 设备定义 | 运行时定义并持久化：开关、DHT22、SHT31/SHT4x、BH1750、ADC 声音 |
 | HA | MQTT Discovery 自动生成 switch / sensor 实体；状态双向同步 |
 | 长稳 | 最近一次启动后运行正常；历史上有 17h 卡死问题，已修复 LVGL 锁无限等待 |
 
-当前屏幕配置掩码 **45**（温湿度 + IP + 日期时间 + 运行时长，用户自行调整）；屏幕文本可通过 `GET /api/screen/text` 预览。
+当前屏幕配置掩码 **127**（全部项）；屏幕文本 `GET /api/screen/text` 预览，画面 `GET /api/screen.bmp` 下载。
 
 ---
 
@@ -91,6 +91,7 @@ main/app_main.c        # 启动顺序：NVS→cfg→设备注册表→双网→T
 | POST | `/api/gpio/dht_test` | DHT22 诊断，JSON `{"pin"}`，返回电平/应答/校验 |
 | GET/POST | `/api/screen` | 读取/设置屏幕显示掩码 `{"mask":N}` |
 | GET | `/api/screen/text` | 预览当前屏幕文本 |
+| GET | `/api/screen.bmp` | 下载当前 LCD 画面（BMP，24-bit） |
 | POST | `/api/device?id=&value=0\|1` | 开关输出控制 |
 | GET | `/api/logs` / `/api/logs/<file>` | TF 日志列表/下载 |
 | GET/POST | `/api/config` | NVS 配置读取/保存 |
@@ -215,7 +216,7 @@ curl --noproxy "*" -X POST "http://192.168.99.13/api/ota" ^
 
 ## 9. 已知问题与风险
 
-1. **DHT22 间歇无应答**：诊断显示 ESP32 侧电平正常，传感器偶发不拉低。优先补 4.7k–10k 上拉；若仍不稳，检查模块供电/线长/更换传感器。
+1. **DHT22 曾间歇无应答**：当前读数稳定（约 24.5℃/71%）；仍建议确认 4.7k–10k 上拉，长线/干扰可能导致偶发 CRC 失败。
 2. **I2C 传感器未实物验证**：SHT/BH 驱动按标准协议实现；先用 `POST /api/gpio/scan` 确认地址。
 3. **历史曲线仍是旧 MQTT 节点数据**：新定义的 DHT/SHT 读数尚未进入 `sensor_history` 与 TF CSV。
 4. **无鉴权**：所有 `/api/*` 明文可调用；只能部署在可信隔离局域网，禁止公网暴露。
@@ -236,7 +237,7 @@ curl --noproxy "*" -X POST "http://192.168.99.13/api/ota" ^
 | DHT 无应答 | `POST /api/gpio/dht_test {"pin":42}` 看 `idle_level/drive_low_level/release_level/resp_low_us`；补上拉 |
 | I2C 无设备 | `POST /api/gpio/scan`；检查 SDA/SCL、上拉、供电、地址 |
 | 定义 I2C 失败 | 先扫描确认地址；定义时会实际探测，无应答直接拒绝 |
-| 屏幕内容不对 | `GET /api/screen` 看掩码，`GET /api/screen/text` 看文本；设置页重新勾选保存 |
+| 屏幕内容不对 | `GET /api/screen` 看掩码，`GET /api/screen/text` 看文本，`GET /api/screen.bmp` 看画面；设置页重新勾选保存 |
 | TF 不写 | 检查 `tf_storage` 日志、卡格式、长文件名配置 |
 
 串口抓取（Windows）：

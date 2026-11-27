@@ -140,6 +140,9 @@ typedef struct {
 /** 对指定引脚做一次 DHT22 读取并返回详细时序（不修改设备表） */
 esp_err_t device_dht_debug(int pin, device_dht_debug_t *out);
 
+/** 取任一有效的本机温湿度传感器（DHT/SHT）；没有返回 false */
+bool device_get_temp_hum(float *temp, float *hum);
+
 /** 板载占用引脚列表 */
 int device_reserved_count(void);
 const device_reserved_t *device_reserved_at(int idx);
