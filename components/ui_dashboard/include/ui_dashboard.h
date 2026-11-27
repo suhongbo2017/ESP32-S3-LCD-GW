@@ -16,7 +16,8 @@
 #define UI_SCREEN_UPLINK    (1u << 4)   /* 上行链路 */
 #define UI_SCREEN_UPTIME    (1u << 5)   /* 运行时长 */
 #define UI_SCREEN_LINK      (1u << 6)   /* ETH/WiFi 可用性 */
-#define UI_SCREEN_ALL       (0x7Fu)
+#define UI_SCREEN_QR        (1u << 7)   /* 二维码页（与信息页轮播） */
+#define UI_SCREEN_ALL       (0xFFu)
 
 #ifdef __cplusplus
 extern "C" {

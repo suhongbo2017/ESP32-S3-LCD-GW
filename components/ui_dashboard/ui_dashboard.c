@@ -85,6 +85,14 @@ static lv_obj_t *s_info_lbl[5] = { 0 }; /*!< 底部信息行 */
 static int        s_info_kind[5];       /*!< 0=IP 1=上行 2=链路 3=运行 4=日期 */
 static int        s_info_n = 0;
 
+/* 二维码页 */
+static lv_obj_t *s_qr_content = NULL;
+static lv_obj_t *s_qr_obj = NULL;
+static lv_obj_t *s_qr_label = NULL;
+static char       s_qr_url[64];
+static bool       s_show_qr = false;
+static int64_t    s_page_switch_us = 0;
+
 static ha_notify_t s_last_notify;       /*!< 最近通知（重建时恢复 banner） */
 static ha_sensor_t s_sensor;            /*!< MQTT 传感器数据（无自定义传感器时兜底） */
 static bool s_sensor_has   = false;
@@ -330,6 +338,33 @@ static bool layout_matches(void)
     return n == s_cache_n;
 }
 
+/** 按当前页面/通知状态显示内容区或二维码页 */
+static void ui_apply_visibility(void)
+{
+    bool show_qr = s_show_qr && (s_items & UI_SCREEN_QR) && !s_notify_active;
+    if (s_content != NULL) {
+        if (s_notify_active || show_qr) {
+            lv_obj_add_flag(s_content, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(s_content, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_qr_content != NULL) {
+        if (show_qr) {
+            lv_obj_remove_flag(s_qr_content, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_qr_content, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_notify_panel != NULL) {
+        if (s_notify_active) {
+            lv_obj_remove_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
 /** 更新数值/状态（不重建控件） */
 static void ui_update_values(const net_manager_status_t *st)
 {
@@ -412,6 +447,24 @@ static void ui_update_values(const net_manager_status_t *st)
         }
         lv_label_set_text(s_info_lbl[i], buf);
     }
+
+#if defined(CONFIG_LV_USE_QRCODE)
+    if (s_qr_obj != NULL) {
+        char url[64];
+        if (st->active_ip[0] != '\0') {
+            snprintf(url, sizeof(url), "http://%s/", st->active_ip);
+        } else {
+            snprintf(url, sizeof(url), "http://esp32gw.local/");
+        }
+        if (strcmp(url, s_qr_url) != 0) {
+            snprintf(s_qr_url, sizeof(s_qr_url), "%s", url);
+            lv_qrcode_set_data(s_qr_obj, s_qr_url);
+            if (s_qr_label != NULL) {
+                lv_label_set_text(s_qr_label, s_qr_url);
+            }
+        }
+    }
+#endif
 }
 
 /** 重建整个看板（配置/设备列表变化时） */
@@ -431,6 +484,9 @@ static void ui_rebuild(const net_manager_status_t *st)
     s_info_n = 0;
     s_sw_shown = 0;
     s_lbl_clock = s_lbl_t_val = s_lbl_h_val = NULL;
+    s_qr_content = NULL;
+    s_qr_obj = NULL;
+    s_qr_label = NULL;
 
     s_content = lv_obj_create(scr);
     lv_obj_set_size(s_content, UI_W, UI_H);
@@ -550,6 +606,39 @@ static void ui_rebuild(const net_manager_status_t *st)
     }
     s_info_n = info_n;
 
+    /* 二维码页（与信息页轮播；由 ui_apply_visibility 控制显隐） */
+#if defined(CONFIG_LV_USE_QRCODE)
+    if (s_items & UI_SCREEN_QR) {
+        s_qr_content = lv_obj_create(scr);
+        lv_obj_set_size(s_qr_content, UI_W, UI_H);
+        lv_obj_set_pos(s_qr_content, 0, 0);
+        lv_obj_set_style_bg_color(s_qr_content, lv_color_hex(0x060B14), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(s_qr_content, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(s_qr_content, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(s_qr_content, 0, LV_PART_MAIN);
+        lv_obj_set_scrollbar_mode(s_qr_content, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_remove_flag(s_qr_content, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *qhdr = ui_panel(s_qr_content, 0, 0, UI_W, 22, 0x0E1A2F, 0);
+        (void)qhdr;
+        ui_label(s_qr_content, 7, 3, &lv_font_cjk_14, 0x00E5FF, "扫码控制");
+
+        s_qr_obj = lv_qrcode_create(s_qr_content);
+        lv_qrcode_set_size(s_qr_obj, 104);
+        lv_qrcode_set_dark_color(s_qr_obj, lv_color_black());
+        lv_qrcode_set_light_color(s_qr_obj, lv_color_white());
+        lv_qrcode_set_quiet_zone(s_qr_obj, true);
+        lv_obj_set_pos(s_qr_obj, 12, 24);
+
+        s_qr_label = ui_label(s_qr_content, 0, 132, &lv_font_montserrat_12, 0xE0E0E0, s_qr_url);
+        lv_obj_set_width(s_qr_label, UI_W);
+        lv_obj_set_style_text_align(s_qr_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+
+        s_qr_url[0] = '\0';
+        lv_obj_add_flag(s_qr_content, LV_OBJ_FLAG_HIDDEN);
+    }
+#endif
+
     /* HA 通知 banner（最后创建，位于顶层） */
     s_notify_panel = lv_obj_create(scr);
     lv_obj_set_size(s_notify_panel, 116, 110);
@@ -572,11 +661,10 @@ static void ui_rebuild(const net_manager_status_t *st)
     s_need_rebuild = false;
 
     if (s_notify_active) {
-        lv_obj_add_flag(s_content, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_notify_title, s_last_notify.title[0] ? s_last_notify.title : "HA NOTIFY");
         lv_label_set_text(s_notify_msg, s_last_notify.message[0] ? s_last_notify.message : "-");
     }
+    ui_apply_visibility();
 
     ui_update_values(st);
 }
@@ -615,13 +703,8 @@ static void ui_show_notify(const ha_notify_t *n)
     lv_label_set_text(s_notify_msg, n->message[0] ? n->message : "-");
     s_last_notify = *n;
 
-    /* 隐藏常规内容，显示 banner */
-    if (s_content != NULL) {
-        lv_obj_add_flag(s_content, LV_OBJ_FLAG_HIDDEN);
-    }
-    lv_obj_remove_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
-
     s_notify_active   = true;
+    ui_apply_visibility();
     s_notify_until_us = esp_timer_get_time() +
                         (uint64_t)CONFIG_HA_MQTT_NOTIFY_SHOW_MS * 1000ULL;
     lvgl_port_unlock();
@@ -630,11 +713,8 @@ static void ui_show_notify(const ha_notify_t *n)
 /** 恢复常规状态显示（由周期刷新任务检测超时后调用） */
 static void ui_hide_notify(void)
 {
-    lv_obj_add_flag(s_notify_panel, LV_OBJ_FLAG_HIDDEN);
-    if (s_content != NULL) {
-        lv_obj_remove_flag(s_content, LV_OBJ_FLAG_HIDDEN);
-    }
     s_notify_active = false;
+    ui_apply_visibility();
 }
 
 /* ---------------------------------------------------------------------------
@@ -688,6 +768,18 @@ static void ui_refresh_task(void *arg)
             continue;
         }
         ui_refresh(&st, false);
+
+        /* 二维码页与信息页每 10s 轮播 */
+        if ((s_items & UI_SCREEN_QR) && !s_notify_active) {
+            int64_t now = esp_timer_get_time();
+            if (s_page_switch_us == 0) {
+                s_page_switch_us = now;
+            } else if (now - s_page_switch_us >= 10 * 1000 * 1000LL) {
+                s_show_qr = !s_show_qr;
+                s_page_switch_us = now;
+                ui_apply_visibility();
+            }
+        }
 
         /* 通知显示窗口到期 → 恢复常规内容 */
         if (s_notify_active && esp_timer_get_time() >= s_notify_until_us) {
@@ -747,6 +839,9 @@ uint32_t ui_dashboard_get_items(void)
 esp_err_t ui_dashboard_set_items(uint32_t mask)
 {
     s_items = mask & UI_SCREEN_ALL;
+    if (!(s_items & UI_SCREEN_QR)) {
+        s_show_qr = false;
+    }
     s_need_rebuild = true;
     nvs_handle_t h;
     if (nvs_open(UI_ITEMS_NS, NVS_READWRITE, &h) == ESP_OK) {

@@ -194,6 +194,7 @@ static const char WEB_CONSOLE_INDEX_HTML[] = R"HTML(<!DOCTYPE html>
           <label class="chk"><input type="checkbox" id="scr_uplink"> 上行链路</label>
           <label class="chk"><input type="checkbox" id="scr_link"> ETH/WiFi</label>
           <label class="chk"><input type="checkbox" id="scr_uptime"> 运行时长</label>
+          <label class="chk"><input type="checkbox" id="scr_qr"> 二维码</label>
         </div>
         <div class="row"><button class="pri" onclick="screenSave()">保存屏幕设置</button></div>
         <div class="msg">修改后 1 秒内生效；最多 8 行，开关较多时自动截断</div>
@@ -517,7 +518,7 @@ async function defineGpio(){
 
 const SCREEN_BITS = {
   scr_temp: 1 << 0, scr_switch: 1 << 1, scr_ip: 1 << 2, scr_time: 1 << 3,
-  scr_uplink: 1 << 4, scr_uptime: 1 << 5, scr_link: 1 << 6
+  scr_uplink: 1 << 4, scr_uptime: 1 << 5, scr_link: 1 << 6, scr_qr: 1 << 7
 };
 async function screenLoad(){
   try{
